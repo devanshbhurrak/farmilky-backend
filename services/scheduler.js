@@ -2,6 +2,35 @@ import cron from "node-cron";
 import Subscription from "../models/subscription.model.js";
 import Invoice from "../models/invoice.model.js";
 
+export const isSubscriptionDueOnDate = (subscription, date = new Date()) => {
+  const normalizedDate = new Date(date);
+  normalizedDate.setHours(0, 0, 0, 0);
+  const daysOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dateName = daysOfWeek[normalizedDate.getDay()];
+
+  if (subscription.status !== "active") {
+    return false;
+  }
+
+  if (subscription.deliverySchedule === "daily") {
+    return true;
+  }
+
+  if (subscription.deliverySchedule === "alternate") {
+    const startDate = new Date(subscription.startDate);
+    startDate.setHours(0, 0, 0, 0);
+    const diffTime = Math.abs(normalizedDate - startDate);
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays % 2 === 0;
+  }
+
+  if (subscription.deliverySchedule === "custom") {
+    return subscription.customDays.includes(dateName);
+  }
+
+  return false;
+};
+
 export const runDailyDeliveryJob = async () => {
   console.log("Running daily delivery job...");
 
@@ -9,23 +38,9 @@ export const runDailyDeliveryJob = async () => {
   const activeSubs = await Subscription.find({ status: "active" });
 
   const today = new Date();
-  const daysOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const todayName = daysOfWeek[today.getDay()];
 
   for (const sub of activeSubs) {
-    let isDue = false;
-
-    if (sub.deliverySchedule === "daily") {
-      isDue = true;
-    } else if (sub.deliverySchedule === "alternate") {
-      const diffTime = Math.abs(today - new Date(sub.startDate));
-      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-      if (diffDays % 2 === 0) isDue = true;
-    } else if (sub.deliverySchedule === "custom" && sub.customDays.includes(todayName)) {
-      isDue = true;
-    }
-
-    if (!isDue) {
+    if (!isSubscriptionDueOnDate(sub, today)) {
       continue;
     }
 

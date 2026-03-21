@@ -4,7 +4,7 @@ import dotenv from 'dotenv'
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import { connectDB } from './config/db.js'
-import { validateEnv } from "./config/env.js";
+import { getAllowedOrigins, validateEnv } from "./config/env.js";
 import userRoutes from "./routes/user.routes.js"
 import productRoutes from "./routes/product.routes.js";
 import cartRoutes from "./routes/cart.routes.js";
@@ -27,13 +27,24 @@ if (process.env.ENABLE_LOCAL_SCHEDULER === "true" && process.env.NODE_ENV !== "p
 }
 
 app.use(cors({
-    origin: process.env.FRONTEND_URL,
+    origin: (origin, callback) => {
+        const allowedOrigins = getAllowedOrigins();
+
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        return callback(new Error("Origin not allowed by CORS"));
+    },
     credentials: true,
 }))
 app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
+app.get("/", (req, res) => {
+    res.send("Welcome to the Farmilky API!");
+})
 app.use("/api/user", userRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/cart", cartRoutes);

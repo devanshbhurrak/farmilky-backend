@@ -1,8 +1,22 @@
 import express from 'express'
 import { authMiddleware } from '../middleware/authMiddleware.js';
-import { cancelSubscription, createSubscription, getUserSubscription, pauseSubscription, resumeSubscription } from '../controllers/subscription.controller.js';
+import { adminOnly } from '../middleware/adminMiddleware.js';
+import {
+  cancelSubscription,
+  createSubscription,
+  getAllSubscriptions,
+  getTodaySupply,
+  getUserSubscription,
+  pauseSubscription,
+  resumeSubscription,
+  updateSubscriptionStatus,
+} from '../controllers/subscription.controller.js';
 
 const router = express.Router();
+
+router.get('/admin/all', authMiddleware, adminOnly, getAllSubscriptions);
+router.get('/admin/today-supply', authMiddleware, adminOnly, getTodaySupply);
+router.put('/admin/:id/status', authMiddleware, adminOnly, updateSubscriptionStatus);
 
 router.post('/', authMiddleware, createSubscription);
 router.get('/', authMiddleware, getUserSubscription);
