@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import User from "../models/user.model.js";
 import jwt from "jsonwebtoken";
+import { getAuthCookieOptions, getClearCookieOptions } from "../utils/cookieOptions.js";
 
 export const registerUser = async (req, res) => {
     try {
@@ -29,12 +30,7 @@ export const registerUser = async (req, res) => {
             { expiresIn: '7d' }
         )
 
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        res.cookie("token", token, getAuthCookieOptions());
 
         res.status(201).json({
             message: "User registered successfully!",
@@ -74,12 +70,7 @@ export const loginUser = async (req, res) => {
             { expiresIn: '7d' }
         )
 
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        res.cookie("token", token, getAuthCookieOptions());
 
 
         res.status(200).json({
@@ -99,11 +90,7 @@ export const loginUser = async (req, res) => {
 
 export const logoutUser = (req, res) => {
     try {
-        res.clearCookie('token', {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
-        });
+        res.clearCookie('token', getClearCookieOptions());
         return res.status(200).json({ message: 'User logged out successfully!' });
     } catch (error) {
         console.error(error);

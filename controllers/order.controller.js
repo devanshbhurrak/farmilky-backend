@@ -71,9 +71,10 @@ export const getUserOrders = async (req, res) => {
 
 export const getOrderById = async (req, res) => {
     try {
+        const userId = req.user._id;
         const { id } = req.params;
 
-        const order = await Order.findById(id).populate('items.productId');
+        const order = await Order.findOne({ _id: id, userId }).populate('items.productId');
 
         if (!order)
             return res.status(404).json({ message: 'Order not found' });
@@ -87,9 +88,10 @@ export const getOrderById = async (req, res) => {
 
 export const cancelOrder = async (req, res) => {
     try {
+        const userId = req.user._id;
         const { id } = req.params
 
-        const order = await Order.findById(id);
+        const order = await Order.findOne({ _id: id, userId });
 
         if (!order)
             return res.status(404).json({ message: 'Order not found' });

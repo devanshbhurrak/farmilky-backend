@@ -12,6 +12,16 @@
       "dest": "server.js"
     }
   ],
+  "crons": [
+    {
+      "path": "/api/cron/daily-delivery",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/monthly-invoices",
+      "schedule": "5 0 1 * *"
+    }
+  ],
   "env": {
     "NODE_ENV": "production"
   }

@@ -82,9 +82,10 @@ export const getUserSubscription = async (req, res) => {
 
 export const pauseSubscription = async (req, res) => {
     try {
+        const userId = req.user._id;
         const {id} = req.params
         
-        const sub = await Subscription.findById(id);
+        const sub = await Subscription.findOne({ _id: id, userId });
 
         if(!sub) return res.status(404).json({message: 'Subscription not found'});
 
@@ -100,9 +101,10 @@ export const pauseSubscription = async (req, res) => {
 
 export const resumeSubscription = async (req, res) => {
     try {
+        const userId = req.user._id;
         const {id} = req.params
 
-        const sub = await Subscription.findById(id);
+        const sub = await Subscription.findOne({ _id: id, userId });
 
         if(!sub) return res.status(404).json({message: 'Subscription not found'});
 
@@ -118,9 +120,10 @@ export const resumeSubscription = async (req, res) => {
 
 export const cancelSubscription = async (req, res) => {
     try {
+        const userId = req.user._id;
         const {id} = req.params
 
-        const sub = await Subscription.findById(id);
+        const sub = await Subscription.findOne({ _id: id, userId });
 
         if(!sub) return res.status(404).json({message: "Subscription not found"})
 
