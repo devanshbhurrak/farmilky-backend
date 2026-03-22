@@ -5,6 +5,7 @@ import {
   cancelSubscription,
   createSubscription,
   getAllSubscriptions,
+  getSubscriptionById,
   getTodaySupply,
   getUserSubscription,
   pauseSubscription,
@@ -20,6 +21,7 @@ router.put('/admin/:id/status', authMiddleware, adminOnly, updateSubscriptionSta
 
 router.post('/', authMiddleware, createSubscription);
 router.get('/', authMiddleware, getUserSubscription);
+router.get('/:id', authMiddleware, getSubscriptionById);
 
 router.put('/:id/pause', authMiddleware, pauseSubscription);
 router.put('/:id/resume', authMiddleware, resumeSubscription);
