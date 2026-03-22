@@ -5,11 +5,15 @@ import { isSubscriptionDueOnDate } from "../services/scheduler.js";
 export const createSubscription = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { productId, quantityPerDay, deliverySchedule = "daily", customDays = [] } =
+    const { productId, deliverySchedule = "daily", customDays = [] } =
       req.body;
+    const parsedQuantityPerDay = Number.parseInt(
+      req.body.quantityPerDay ?? req.body.quantity,
+      10
+    );
 
-    if (!productId || !quantityPerDay) {
-      return res.status(400).json({ message: "Product and quantity required" });
+    if (!productId || !Number.isInteger(parsedQuantityPerDay) || parsedQuantityPerDay < 1) {
+      return res.status(400).json({ message: "Valid product and quantity required" });
     }
 
     const product = await Product.findById(productId);
@@ -18,7 +22,7 @@ export const createSubscription = async (req, res) => {
     }
 
     // 1️⃣ Calculate price
-    const totalPricePerDay = product.price * quantityPerDay;
+    const totalPricePerDay = product.price * parsedQuantityPerDay;
 
     // 2️⃣ Calculate next delivery date
     const nextDeliveryDate = new Date();
@@ -40,7 +44,7 @@ export const createSubscription = async (req, res) => {
     const subscription = new Subscription({
       userId,
       productId,
-      quantityPerDay,
+      quantityPerDay: parsedQuantityPerDay,
       deliverySchedule,
       customDays: deliverySchedule === "custom" ? customDays : [],
       totalPricePerDay,
