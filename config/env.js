@@ -1,7 +1,31 @@
-const requiredEnvVars = ["MONGO_URI", "JWT_SECRET", "FRONTEND_URL"];
+const requiredEnvVars = ["MONGO_URI", "JWT_SECRET", "FRONTEND_URL", "CRON_SECRET"];
+
+const parseOriginList = (value) => {
+  if (!value) {
+    return [];
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((origin) => String(origin).trim()).filter(Boolean);
+      }
+    } catch {
+      // Fall back to comma-separated parsing.
+    }
+  }
+
+  return trimmed
+    .split(",")
+    .map((origin) => origin.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+};
 
 export const getAllowedOrigins = () =>
-  [process.env.FRONTEND_URL, process.env.ADMIN_PORTAL_URL].filter(Boolean);
+  [...parseOriginList(process.env.FRONTEND_URL), ...parseOriginList(process.env.ADMIN_PORTAL_URL)];
 
 export const validateEnv = () => {
   const missingVars = requiredEnvVars.filter((key) => !process.env[key]);

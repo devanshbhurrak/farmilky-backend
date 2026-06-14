@@ -4,8 +4,8 @@ export const createProduct = async (req, res) => {
     try {
         const { name, description, category, price, unit, fatContent, stock, image } = req.body;
 
-        if(!name || !description || !category || !price || !image) {
-            return res.status(400).json({message: "Name, description, category, price and image are required"});
+        if(!name || !description || !category || !price || !image || price <= 0 || (stock !== undefined && stock < 0)) {
+            return res.status(400).json({message: "Valid name, description, category, positive price and image are required"});
         }
 
         const newProduct = new Product({

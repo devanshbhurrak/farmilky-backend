@@ -17,7 +17,22 @@ test("admin order routes are registered before dynamic user id routes", () => {
   });
 
   assert.deepEqual(routeLayers[1], {
+    path: "/admin/:id",
+    methods: ["get"],
+  });
+
+  assert.deepEqual(routeLayers[2], {
+    path: "/admin/:id/delivery-outcome",
+    methods: ["post"],
+  });
+
+  assert.deepEqual(routeLayers[3], {
     path: "/admin/:id/status",
     methods: ["put"],
   });
+
+  const firstUserDynamicRouteIndex = routeLayers.findIndex((route) => route.path === "/:id");
+  const lastAdminRouteIndex = routeLayers.findLastIndex((route) => String(route.path).startsWith("/admin"));
+
+  assert.ok(lastAdminRouteIndex < firstUserDynamicRouteIndex);
 });

@@ -20,6 +20,10 @@
     {
       "path": "/api/cron/monthly-invoices",
       "schedule": "5 0 1 * *"
+    },
+    {
+      "path": "/api/cron/end-of-day",
+      "schedule": "0 21 * * *"
     }
   ],
   "env": {

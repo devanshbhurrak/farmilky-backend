@@ -25,8 +25,8 @@ export const addToCart = async (req, res) => {
         const userId = req.user._id;
         const { productId, quantity } = req.body;
 
-        if(!productId)
-            return res.status(400).json({message: 'Product ID is required'});
+        if(!productId || !Number.isInteger(quantity) || quantity < 1)
+            return res.status(400).json({message: 'Product ID and a valid positive quantity are required'});
 
         const product = await Product.findById(productId);
         if(!product)

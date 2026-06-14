@@ -18,6 +18,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Please enter a password"],
       minlength: 6,
+      select: false,
     },
     phone: {
       type: String,
@@ -44,9 +45,13 @@ const userSchema = new mongoose.Schema(
         type: { type: String, enum: ["home", "work", "other"], default: "home" },
       },
     ],
+    accountBalance: {
+      type: Number,
+      default: 0,
+    },
     role: {
       type: String,
-      enum: ["customer", "admin", "delivery"],
+      enum: ["customer", "admin", "delivery", "delivery_partner", "agent"],
       default: "customer",
     },
     orders: [
@@ -59,9 +64,45 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    deliveryPreferences: {
+      preferredTimeSlot: {
+        type: String,
+        enum: ["morning", "evening", "anytime"],
+        default: "morning",
+      },
+      defaultDeliveryNotes: {
+        type: String,
+        default: "",
+        maxlength: 200,
+      },
+    },
+    assignedArea: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Area",
+      default: null,
+    },
+    agentInfo: {
+      joiningDate: { type: Date, default: null },
+      availability: {
+        type: String,
+        enum: ["available", "busy", "offline"],
+        default: "offline",
+      },
+      vehicleType: { type: String, default: "" },
+      maxCapacity: { type: Number, default: 0 },
+      assignedArea: { type: mongoose.Schema.Types.ObjectId, ref: "Area", default: null },
+      lastActiveAt: { type: Date, default: null },
+      managedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
 );
+
+userSchema.index({ phone: 1 }, { unique: true, sparse: true });
+userSchema.index({ role: 1, createdAt: -1 });
+userSchema.index({ "agentInfo.assignedArea": 1 });
 
 const User = mongoose.model("User", userSchema);
 

@@ -93,6 +93,23 @@ const orderSchema = new mongoose.Schema({
     cancelledAt: {
         type: Date,
     },
+    deliveryAttempts: [{
+        attemptDate:  { type: Date, default: Date.now },
+        status:       { type: String, enum: ["delivered", "failed"], required: true },
+        reason:       { type: String, default: null },
+        notes:        { type: String, default: null },
+        handledBy:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    }],
+    areaId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Area",
+        default: null,
+    },
+    assignedAgent: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+    },
 }, { timestamps: true })
 
 

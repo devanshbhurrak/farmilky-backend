@@ -1,6 +1,6 @@
 import {
   runDailyDeliveryJob,
-  runMonthlyInvoiceGenerationJob,
+  runEndOfDayJob,
 } from "../services/scheduler.js";
 
 export const isAuthorizedCronRequest = (req) => {
@@ -31,19 +31,19 @@ export const runDailyDeliveryCron = async (req, res) => {
   }
 };
 
-export const runMonthlyInvoiceCron = async (req, res) => {
+export const runEndOfDayCron = async (req, res) => {
   try {
     if (!isAuthorizedCronRequest(req)) {
       return res.status(401).json({ message: "Unauthorized cron request" });
     }
 
-    const result = await runMonthlyInvoiceGenerationJob();
+    const result = await runEndOfDayJob();
     return res.status(200).json({
-      message: "Monthly invoice job completed",
+      message: "End-of-day job completed",
       ...result,
     });
   } catch (error) {
-    console.error("Monthly invoice cron failed:", error);
-    return res.status(500).json({ message: "Monthly invoice job failed" });
+    console.error("End-of-day cron failed:", error);
+    return res.status(500).json({ message: "End-of-day job failed" });
   }
 };
