@@ -21,6 +21,7 @@ import agentRoutes from "./routes/agent.routes.js";
 import deliveryManifestRoutes from "./routes/deliveryManifest.routes.js";
 import returnRoutes from "./routes/return.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
+import contactRoutes from "./routes/contact.routes.js";
 
 import initScheduler from "./services/scheduler.js";
 
@@ -50,7 +51,7 @@ app.use(cors({
 }))
 app.use(helmet());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
 // Rate Limiting for Auth
@@ -58,6 +59,13 @@ const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // limit each IP to 100 requests per windowMs
     message: { message: "Too many requests from this IP, please try again after 15 minutes" }
+});
+
+// Rate Limiting for public contact form (stricter — creates DB documents)
+const contactLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5, // 5 submissions per IP per hour
+    message: { message: "Too many messages sent. Please try again later." }
 });
 
 app.get("/", (req, res) => {
@@ -77,13 +85,13 @@ app.use("/api/agents", agentRoutes);
 app.use("/api/manifests", deliveryManifestRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/contact", contactLimiter, contactRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error(`[Error] ${req.method} ${req.url}:`, err.stack);
     res.status(err.status || 500).json({
         message: err.message || "Internal Server Error",
-        error: process.env.NODE_ENV === "production" ? {} : err.stack,
     });
 });
 

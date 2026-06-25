@@ -36,7 +36,6 @@ export const registerUser = async (req, res) => {
 
         res.status(201).json({
             message: "User registered successfully!",
-            token,
             user: {
                 id: newUser._id,
                 name: newUser.name,
@@ -46,7 +45,7 @@ export const registerUser = async (req, res) => {
         })
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Server error, please try again later.', error: error?.message })
+        res.status(500).json({ message: 'Server error, please try again later.' })
     }
 }
 
@@ -100,7 +99,7 @@ export const createUserAdmin = async (req, res) => {
     });
   } catch (error) {
     console.error("Create User Admin Error:", error);
-    res.status(500).json({ message: "Server error, please try again later.", error: error?.message });
+    res.status(500).json({ message: "Server error, please try again later." });
   }
 };
 
@@ -115,14 +114,14 @@ export const loginUser = async (req, res) => {
 
         if (!user) {
             console.warn(`[Auth] Failed login attempt: User not found (${email})`);
-            return res.status(401).json({ message: "User not found!" });
+            return res.status(401).json({ message: "Invalid email or password!" });
         }
 
         const isMatch = await bcrypt.compare(password, user.password);
 
         if (!isMatch) {
             console.warn(`[Auth] Failed login attempt: Invalid credentials for ${email}`);
-            return res.status(401).json({ message: "Invalid credentials!" })
+            return res.status(401).json({ message: "Invalid email or password!" });
         }
 
         const token = jwt.sign(
@@ -133,10 +132,8 @@ export const loginUser = async (req, res) => {
 
         res.cookie("token", token, getAuthCookieOptions());
 
-
         res.status(200).json({
             message: "Login successful!",
-            token,
             user: {
                 id: user._id,
                 name: user.name,
@@ -146,7 +143,7 @@ export const loginUser = async (req, res) => {
         });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Server error, please try again later.", error: error?.message });
+        res.status(500).json({ message: "Server error, please try again later." });
     }
 }
 
@@ -156,7 +153,7 @@ export const logoutUser = (req, res) => {
         return res.status(200).json({ message: 'User logged out successfully!' });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Server error, please try again later.', error: error?.message })
+        res.status(500).json({ message: 'Server error, please try again later.' })
     }
 }
 
@@ -194,7 +191,7 @@ export const updateProfile = async (req, res) => {
 
     } catch (error) {
         console.error("Update Profile Error:", error);
-        res.status(500).json({ message: "Failed to update profile", error: error?.message });
+        res.status(500).json({ message: "Failed to update profile" });
     }
 }
 
@@ -204,10 +201,11 @@ export const getAllUsersAdmin = async (req, res) => {
     let query = {};
     if (role) query.role = role;
     if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       query.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-        { phone: { $regex: search, $options: "i" } },
+        { name: { $regex: escapedSearch, $options: "i" } },
+        { email: { $regex: escapedSearch, $options: "i" } },
+        { phone: { $regex: escapedSearch, $options: "i" } },
       ];
     }
 
@@ -315,7 +313,11 @@ export const updateUserAdmin = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     if (name) user.name = name;
-    if (email) user.email = email;
+    if (email && email !== user.email) {
+      const existing = await User.findOne({ email, _id: { $ne: id } });
+      if (existing) return res.status(409).json({ message: "Email is already in use by another account." });
+      user.email = email;
+    }
     if (phone) user.phone = phone;
     if (role) user.role = role;
     if (addresses) user.addresses = addresses;
@@ -347,7 +349,7 @@ export const updateUserAdmin = async (req, res) => {
     });
   } catch (error) {
     console.error("Update User Admin Error:", error);
-    res.status(500).json({ message: "Server error", error: error?.message });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -365,6 +367,6 @@ export const getUserProfile = async (req, res) => {
         });
     } catch (error) {
         console.error("Get Profile Error:", error);
-        res.status(500).json({ message: "Failed to fetch profile", error: error?.message });
+        res.status(500).json({ message: "Failed to fetch profile" });
     }
 }

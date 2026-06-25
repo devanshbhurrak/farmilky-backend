@@ -78,7 +78,7 @@ export const updateOrderAdmin = async (req, res) => {
     });
   } catch (error) {
     console.error("Update Order Admin Error:", error);
-    res.status(500).json({ message: error.message || "Failed to update order" });
+    res.status(500).json({ message: "Failed to update order" });
   }
 };
 
@@ -133,7 +133,7 @@ export const createOrderAdmin = async (req, res) => {
     });
   } catch (error) {
     console.error("Create Order Admin Error:", error);
-    res.status(500).json({ message: error.message || "Failed to create order" });
+    res.status(500).json({ message: "Failed to create order" });
   }
 };
 

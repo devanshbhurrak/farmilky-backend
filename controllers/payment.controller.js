@@ -5,13 +5,14 @@ export const recordPaymentAdmin = async (req, res) => {
     try {
         const { userId, amount, transactionId, notes, date } = req.body;
 
-        if (!userId || !amount) {
-            return res.status(400).json({ message: "User and amount are required." });
+        const parsedAmount = Number(amount);
+        if (!userId || !amount || isNaN(parsedAmount) || parsedAmount <= 0) {
+            return res.status(400).json({ message: "User and a positive amount are required." });
         }
 
         const payment = new Payment({
             userId,
-            amount: Number(amount),
+            amount: parsedAmount,
             transactionId,
             notes,
             recordedBy: req.user._id,
@@ -22,7 +23,7 @@ export const recordPaymentAdmin = async (req, res) => {
 
         // Atomically decrease user balance (Credit)
         await User.findByIdAndUpdate(userId, {
-            $inc: { accountBalance: -Number(amount) }
+            $inc: { accountBalance: -parsedAmount }
         });
 
         res.status(201).json({ message: "Payment recorded successfully.", payment });

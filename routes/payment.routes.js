@@ -12,6 +12,6 @@ router.delete("/admin/:id", authMiddleware, adminOnly, deletePaymentAdmin);
 
 // Passbook Routes
 router.get("/my-passbook", authMiddleware, getMyPassbook);
-router.get("/:userId", authMiddleware, getCustomerPassbook);
+router.get("/:userId", authMiddleware, adminOnly, getCustomerPassbook);
 
 export default router;
