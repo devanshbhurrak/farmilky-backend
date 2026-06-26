@@ -22,6 +22,9 @@ import deliveryManifestRoutes from "./routes/deliveryManifest.routes.js";
 import returnRoutes from "./routes/return.routes.js";
 import paymentRoutes from "./routes/payment.routes.js";
 import contactRoutes from "./routes/contact.routes.js";
+import supplierRoutes from "./routes/supplier.routes.js";
+import milkCollectionRoutes from "./routes/milkCollection.routes.js";
+import supplierPaymentRoutes from "./routes/supplierPayment.routes.js";
 
 import initScheduler from "./services/scheduler.js";
 
@@ -86,6 +89,9 @@ app.use("/api/manifests", deliveryManifestRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/contact", contactLimiter, contactRoutes);
+app.use("/api/suppliers", supplierRoutes);
+app.use("/api/milk-collections", milkCollectionRoutes);
+app.use("/api/supplier-payments", supplierPaymentRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {

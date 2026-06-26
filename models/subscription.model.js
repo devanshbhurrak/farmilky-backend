@@ -54,6 +54,10 @@ const subscriptionSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    pricePerUnit: {
+      type: Number,
+      default: null,
+    },
     status: {
       type: String,
       enum: ["active", "paused", "cancelled"],

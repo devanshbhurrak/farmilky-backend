@@ -1,6 +1,7 @@
 import Product from "../models/product.model.js";
 import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
+import User from "../models/user.model.js";
 
 import { calculateNextDeliveryDate, isSubscriptionDueOnDate } from "../services/scheduler.js";
 
@@ -38,7 +39,11 @@ export const createSubscriptionAdmin = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const totalPricePerDay = product.price * parsedQuantityPerDay;
+    const pricePerUnit =
+      req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0
+        ? Number(req.body.pricePerUnit)
+        : product.price;
+    const totalPricePerDay = pricePerUnit * parsedQuantityPerDay;
 
     let startDate = new Date();
     if (req.body.startDate) {
@@ -62,6 +67,7 @@ export const createSubscriptionAdmin = async (req, res) => {
       quantityPerDay: parsedQuantityPerDay,
       deliverySchedule,
       customDays: deliverySchedule === "custom" ? customDays : [],
+      pricePerUnit,
       totalPricePerDay,
       nextDeliveryDate,
       status: req.body.status || "active",
@@ -101,8 +107,9 @@ export const createSubscription = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // 1️⃣ Calculate price
-    const totalPricePerDay = product.price * parsedQuantityPerDay;
+    // 1️⃣ Calculate price (customers always pay product price — custom rates are admin-only)
+    const pricePerUnit = product.price;
+    const totalPricePerDay = pricePerUnit * parsedQuantityPerDay;
 
     // 2️⃣ Calculate next delivery date
     if (deliverySchedule === "custom") {
@@ -137,6 +144,7 @@ export const createSubscription = async (req, res) => {
       quantityPerDay: parsedQuantityPerDay,
       deliverySchedule,
       customDays: deliverySchedule === "custom" ? customDays : [],
+      pricePerUnit,
       totalPricePerDay,
       nextDeliveryDate,
       status: "active",
@@ -699,6 +707,7 @@ export const updateSubscriptionAdmin = async (req, res) => {
     const sub = await Subscription.findById(id).populate("productId");
     if (!sub) return res.status(404).json({ message: "Subscription not found" });
 
+    const productChanged = productId && String(productId) !== String(sub.productId?._id || sub.productId);
     if (productId) sub.productId = productId;
     if (status) sub.status = status;
     if (startDate) sub.startDate = new Date(startDate);
@@ -719,11 +728,23 @@ export const updateSubscriptionAdmin = async (req, res) => {
       sub.quantityPerDay = qty;
     }
 
-    // Recalculate price if quantity or product changed
-    const product = await Product.findById(sub.productId);
-    if (product) {
-      sub.totalPricePerDay = product.price * sub.quantityPerDay;
+    // Resolve the effective price per unit:
+    // 1. If a new pricePerUnit is explicitly provided in this request → use it
+    // 2. If the product changed (and no explicit price) → reset to new product's price
+    // 3. Otherwise → keep the existing sub.pricePerUnit (custom rate is preserved)
+    // sub.productId may be a populated document or a plain ObjectId — normalise to ID
+    const product = await Product.findById(sub.productId?._id || sub.productId);
+    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    if (req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0) {
+      sub.pricePerUnit = Number(req.body.pricePerUnit);
+    } else if (productChanged) {
+      sub.pricePerUnit = product.price;
     }
+    // else: keep existing sub.pricePerUnit
+
+    const effectivePricePerUnit = sub.pricePerUnit || product.price;
+    sub.totalPricePerDay = effectivePricePerUnit * sub.quantityPerDay;
 
     // Recalculate next delivery date
     sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date());
@@ -761,7 +782,9 @@ export const updateSubscription = async (req, res) => {
       const qty = Number.parseInt(quantityPerDay, 10);
       if (!Number.isInteger(qty) || qty < 1) return res.status(400).json({ message: "Invalid quantity" });
       sub.quantityPerDay = qty;
-      sub.totalPricePerDay = sub.productId.price * qty;
+      // Use the stored pricePerUnit (custom negotiated rate) — falls back to product price for legacy records
+      const effectivePricePerUnit = sub.pricePerUnit || sub.productId.price;
+      sub.totalPricePerDay = effectivePricePerUnit * qty;
     }
 
     await sub.save();

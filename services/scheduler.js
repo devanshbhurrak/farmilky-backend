@@ -116,7 +116,9 @@ export const runDailyDeliveryJob = async () => {
     if (sub.productId) {
       console.log(`[Scheduler] Applying quantity change for sub ${sub._id}: ${sub.quantityPerDay} -> ${sub.scheduledChange.newQuantityPerDay}`);
       sub.quantityPerDay = sub.scheduledChange.newQuantityPerDay;
-      sub.totalPricePerDay = sub.productId.price * sub.quantityPerDay;
+      // Use the stored pricePerUnit (custom rate) — falls back to product price for legacy records
+      const effectivePricePerUnit = sub.pricePerUnit || sub.productId.price;
+      sub.totalPricePerDay = effectivePricePerUnit * sub.quantityPerDay;
     }
     sub.scheduledChange = { newQuantityPerDay: null, effectiveDate: null };
     await sub.save();
