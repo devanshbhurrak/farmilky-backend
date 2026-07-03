@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Payment from "../models/payment.model.js";
 import User from "../models/user.model.js";
 
@@ -19,12 +20,17 @@ export const recordPaymentAdmin = async (req, res) => {
             date: date ? new Date(date) : new Date(),
         });
 
-        await payment.save();
-
-        // Atomically decrease user balance (Credit)
-        await User.findByIdAndUpdate(userId, {
-            $inc: { accountBalance: -parsedAmount }
-        });
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                await payment.save({ session });
+                await User.findByIdAndUpdate(userId, {
+                    $inc: { accountBalance: -parsedAmount }
+                }, { session });
+            });
+        } finally {
+            await session.endSession();
+        }
 
         res.status(201).json({ message: "Payment recorded successfully.", payment });
     } catch (error) {
@@ -39,12 +45,17 @@ export const deletePaymentAdmin = async (req, res) => {
         const payment = await Payment.findById(id);
         if (!payment) return res.status(404).json({ message: "Payment not found" });
 
-        // Revert balance (Debit)
-        await User.findByIdAndUpdate(payment.userId, {
-            $inc: { accountBalance: payment.amount }
-        });
-
-        await Payment.findByIdAndDelete(id);
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                await User.findByIdAndUpdate(payment.userId, {
+                    $inc: { accountBalance: payment.amount }
+                }, { session });
+                await Payment.findByIdAndDelete(id, { session });
+            });
+        } finally {
+            await session.endSession();
+        }
 
         res.status(200).json({ message: "Payment deleted and balance reverted." });
     } catch (error) {

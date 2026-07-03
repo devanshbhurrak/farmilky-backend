@@ -118,7 +118,7 @@ export const runDailyDeliveryJob = async () => {
       sub.quantityPerDay = sub.scheduledChange.newQuantityPerDay;
       // Use the stored pricePerUnit (custom rate) — falls back to product price for legacy records
       const effectivePricePerUnit = sub.pricePerUnit || sub.productId.price;
-      sub.totalPricePerDay = effectivePricePerUnit * sub.quantityPerDay;
+      sub.totalPricePerDay = parseFloat((effectivePricePerUnit * sub.quantityPerDay).toFixed(2));
     }
     sub.scheduledChange = { newQuantityPerDay: null, effectiveDate: null };
     await sub.save();

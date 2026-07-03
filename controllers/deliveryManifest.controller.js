@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
@@ -61,15 +62,18 @@ export const generateDailyManifests = async (req, res) => {
       const defaultAddr = addresses.find((a) => a.isDefault) || addresses[0];
       const pincode = defaultAddr?.pincode || "";
       const matchedArea = pincodeAreaMap[pincode];
+      const effectiveUnit = sub.variantUnit || sub.productId?.unit || "unit";
+      const productName = sub.productId?.name || "Unknown";
+      const variantSuffix = sub.variantLabel ? ` (${sub.variantLabel})` : "";
       const entry = {
         type: "subscription",
         referenceId: sub._id,
         customerName: user?.name || "Unknown",
         phone: user?.phone || "",
         address: addressToString(defaultAddr),
-        productLabel: `${sub.productId?.name} (${sub.quantityPerDay} ${sub.productId?.unit})`,
+        productLabel: `${productName}${variantSuffix} × ${sub.quantityPerDay} ${effectiveUnit}`,
         quantity: sub.quantityPerDay,
-        unit: sub.productId?.unit || "unit",
+        unit: effectiveUnit,
         amount: sub.totalPricePerDay || 0,
         status: "pending",
       };
@@ -227,32 +231,49 @@ export const updateManifestEntry = async (req, res) => {
     
     if (status === "delivered") {
         entry.deliveredAt = new Date();
-        
+
         // --- VIRTUAL PASSBOOK INTEGRATION ---
-        
+
         if (entry.type === "subscription") {
             const sub = await Subscription.findById(entry.referenceId);
             if (sub) {
-                const deliveryEntry = {
-                    deliveryDate: manifest.date,
-                    status: "delivered",
-                    scheduledQuantity: sub.quantityPerDay,
-                    actualQuantity: sub.quantityPerDay,
-                    pricePerUnit: sub.totalPricePerDay / sub.quantityPerDay,
-                    totalAmount: sub.totalPricePerDay,
-                    notes: deliveryNotes || "Delivered via Agent App",
-                    handledBy: agentId,
-                    handledAt: new Date(),
-                };
-                sub.deliveryHistory.push(deliveryEntry);
-                sub.pendingAmount += sub.totalPricePerDay;
-                sub.nextDeliveryDate = calculateNextDeliveryDate(sub, manifest.date);
-                await sub.save();
-
-                // Increment User Balance (Debit)
-                await User.findByIdAndUpdate(sub.userId, {
-                    $inc: { accountBalance: sub.totalPricePerDay }
+                // Idempotency: check if delivery already recorded for this date
+                const manifestDate = normalizeDate(manifest.date);
+                const alreadyRecorded = sub.deliveryHistory.some((h) => {
+                    const d = h.deliveryDate || h.date;
+                    return d && normalizeDate(d).getTime() === manifestDate.getTime();
                 });
+
+                if (!alreadyRecorded) {
+                    const pricePerUnit = parseFloat((sub.totalPricePerDay / sub.quantityPerDay).toFixed(2));
+                    const totalAmount = sub.totalPricePerDay; // Use exact daily total to avoid rounding drift
+                    const deliveryEntry = {
+                        deliveryDate: manifest.date,
+                        status: "delivered",
+                        scheduledQuantity: sub.quantityPerDay,
+                        actualQuantity: sub.quantityPerDay,
+                        pricePerUnit,
+                        totalAmount,
+                        notes: deliveryNotes || "Delivered via Agent App",
+                        handledBy: agentId,
+                        handledAt: new Date(),
+                    };
+                    sub.deliveryHistory.push(deliveryEntry);
+                    sub.pendingAmount += totalAmount;
+                    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, manifest.date);
+
+                    const subSession = await mongoose.startSession();
+                    try {
+                      await subSession.withTransaction(async () => {
+                        await sub.save({ session: subSession });
+                        await User.findByIdAndUpdate(sub.userId, {
+                          $inc: { accountBalance: totalAmount }
+                        }, { session: subSession });
+                      });
+                    } finally {
+                      await subSession.endSession();
+                    }
+                }
             }
         } else if (entry.type === "order") {
             const order = await Order.findById(entry.referenceId);
@@ -260,19 +281,25 @@ export const updateManifestEntry = async (req, res) => {
                 order.orderStatus = "delivered";
                 order.deliveredAt = Date.now();
                 if (order.paymentMethod === "COD") order.paymentStatus = "paid";
-                
+
                 order.deliveryAttempts.push({
                     attemptDate: new Date(),
                     status: "delivered",
                     notes: deliveryNotes || "Delivered via Agent App",
                     handledBy: agentId,
                 });
-                await order.save();
 
-                // Increment User Balance (Debit)
-                await User.findByIdAndUpdate(order.userId, {
-                    $inc: { accountBalance: order.totalAmount }
-                });
+                const orderSession = await mongoose.startSession();
+                try {
+                  await orderSession.withTransaction(async () => {
+                    await order.save({ session: orderSession });
+                    await User.findByIdAndUpdate(order.userId, {
+                      $inc: { accountBalance: order.totalAmount }
+                    }, { session: orderSession });
+                  });
+                } finally {
+                  await orderSession.endSession();
+                }
             }
         }
     }

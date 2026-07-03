@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Cart from "../models/cart.model.js";
 import Order from "../models/order.model.js";
 import Area from "../models/area.model.js";
@@ -27,12 +28,34 @@ export const updateOrderAdmin = async (req, res) => {
         items.map(async (item) => {
           const product = await Product.findById(item.productId);
           if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          let effectivePrice = product.price;
+          let variantId = null;
+          let variantLabel = null;
+          let unit = product.unit ?? null;
+          let originalPrice = null;
+
+          if (item.variantId && product.variants?.length > 0) {
+            const variant = product.variants.id(item.variantId);
+            if (variant) {
+              effectivePrice = variant.discountedPrice ?? variant.price;
+              variantId = variant._id;
+              variantLabel = variant.label;
+              unit = variant.unit;
+              originalPrice = variant.discountedPrice != null ? variant.price : null;
+            }
+          }
+
           return {
             productId: product._id,
             name: product.name,
-            price: product.price,
+            price: effectivePrice,
+            originalPrice,
             image: product.image,
             quantity: item.quantity,
+            variantId,
+            variantLabel,
+            unit,
           };
         })
       );
@@ -94,17 +117,39 @@ export const createOrderAdmin = async (req, res) => {
       items.map(async (item) => {
         const product = await Product.findById(item.productId);
         if (!product) throw new Error(`Product ${item.productId} not found`);
+
+        let effectivePrice = product.price;
+        let variantId = null;
+        let variantLabel = null;
+        let unit = product.unit ?? null;
+        let originalPrice = null;
+
+        if (item.variantId && product.variants?.length > 0) {
+          const variant = product.variants.id(item.variantId);
+          if (variant) {
+            effectivePrice = variant.discountedPrice ?? variant.price;
+            variantId = variant._id;
+            variantLabel = variant.label;
+            unit = variant.unit;
+            originalPrice = variant.discountedPrice != null ? variant.price : null;
+          }
+        }
+
         return {
           productId: product._id,
           name: product.name,
-          price: product.price,
+          price: effectivePrice,
+          originalPrice,
           image: product.image,
           quantity: item.quantity,
+          variantId,
+          variantLabel,
+          unit,
         };
       })
     );
 
-    const totalAmount = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const totalAmount = parseFloat(orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2));
 
     let areaId = null;
     if (address?.pincode) {
@@ -151,18 +196,42 @@ export const createOrder = async (req, res) => {
         if (!cart || cart.items.length === 0)
             return res.status(400).json({ message: 'Cart is empty' })
 
-        const orderItems = cart.items.map((item) => ({
-            productId: item.productId._id,
-            name: item.productId.name,
-            price: item.productId.price,
-            image: item.productId.image,
-            quantity: item.quantity
-        }))
+        const orderItems = cart.items.map((item) => {
+            const product = item.productId;
+            let effectivePrice = product.price;
+            let variantId = null;
+            let variantLabel = null;
+            let unit = null;
+            let originalPrice = null;
 
-        const totalAmount = orderItems.reduce(
+            if (item.variantId && product.variants?.length > 0) {
+                const variant = product.variants.id(item.variantId);
+                if (variant) {
+                    effectivePrice = variant.discountedPrice ?? variant.price;
+                    variantId = variant._id;
+                    variantLabel = item.variantLabel;
+                    unit = variant.unit;
+                    originalPrice = variant.discountedPrice != null ? variant.price : null;
+                }
+            }
+
+            return {
+                productId: product._id,
+                name: product.name,
+                price: effectivePrice,
+                image: product.image,
+                quantity: item.quantity,
+                variantId,
+                variantLabel,
+                unit,
+                originalPrice,
+            };
+        })
+
+        const totalAmount = parseFloat(orderItems.reduce(
             (sum, item) => sum + item.price * item.quantity,
             0
-        );
+        ).toFixed(2));
 
         // Auto-detect area from pincode
         let areaId = null;
@@ -187,12 +256,22 @@ export const createOrder = async (req, res) => {
         await newOrder.save();
 
         // 3️⃣ Decrement stock for each product
-        const stockUpdates = orderItems.map((item) => ({
-            updateOne: {
-                filter: { _id: item.productId },
-                update: { $inc: { stock: -item.quantity } },
-            },
-        }));
+        const stockUpdates = orderItems.map((item) => {
+            if (item.variantId) {
+                return {
+                    updateOne: {
+                        filter: { _id: item.productId, "variants._id": item.variantId },
+                        update: { $inc: { "variants.$.stock": -item.quantity } },
+                    },
+                };
+            }
+            return {
+                updateOne: {
+                    filter: { _id: item.productId },
+                    update: { $inc: { stock: -item.quantity } },
+                },
+            };
+        });
         await Product.bulkWrite(stockUpdates);
 
         await Cart.findOneAndUpdate({ userId }, { items: [] })
@@ -341,13 +420,20 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
       });
     }
 
-    await order.save();
-
-    // Update user account balance if delivered
     if (status === "delivered") {
-        await User.findByIdAndUpdate(order.userId, {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await order.save({ session });
+          await User.findByIdAndUpdate(order.userId, {
             $inc: { accountBalance: order.totalAmount }
+          }, { session });
         });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await order.save();
     }
 
     res.status(200).json({
@@ -405,13 +491,20 @@ export const updateOrderStatus = async (req, res) => {
             }
         }
 
-        await order.save()
-
-        // Apply balance adjustment
         if (balanceAdjustment !== 0) {
-            await User.findByIdAndUpdate(order.userId, {
-                $inc: { accountBalance: balanceAdjustment }
-            });
+            const session = await mongoose.startSession();
+            try {
+              await session.withTransaction(async () => {
+                await order.save({ session });
+                await User.findByIdAndUpdate(order.userId, {
+                  $inc: { accountBalance: balanceAdjustment }
+                }, { session });
+              });
+            } finally {
+              await session.endSession();
+            }
+        } else {
+            await order.save();
         }
 
         res.status(200).json({

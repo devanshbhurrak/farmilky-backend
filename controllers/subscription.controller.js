@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Product from "../models/product.model.js";
 import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
@@ -39,11 +40,28 @@ export const createSubscriptionAdmin = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const pricePerUnit =
-      req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0
-        ? Number(req.body.pricePerUnit)
-        : product.price;
-    const totalPricePerDay = pricePerUnit * parsedQuantityPerDay;
+    let adminResolvedVariantId = null;
+    let adminResolvedVariantLabel = null;
+    let adminResolvedVariantUnit = null;
+    const explicitPrice = req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0;
+    let pricePerUnit = explicitPrice ? Number(req.body.pricePerUnit) : product.price;
+
+    if (product.variants?.length > 0 && !explicitPrice) {
+        const variantId = req.body.variantId;
+        let variant;
+        if (variantId) {
+            variant = product.variants.id(variantId);
+            if (!variant) return res.status(400).json({ message: "Variant not found" });
+        } else {
+            variant = product.variants.find(v => v.isDefault) || product.variants[0];
+        }
+        pricePerUnit = variant.discountedPrice ?? variant.price;
+        adminResolvedVariantId = variant._id;
+        adminResolvedVariantLabel = variant.label;
+        adminResolvedVariantUnit = variant.unit || null;
+    }
+
+    const totalPricePerDay = parseFloat((pricePerUnit * parsedQuantityPerDay).toFixed(2));
 
     let startDate = new Date();
     if (req.body.startDate) {
@@ -74,6 +92,9 @@ export const createSubscriptionAdmin = async (req, res) => {
       startDate,
       pendingAmount: 0,
       deliveryHistory: [],
+      variantId: adminResolvedVariantId,
+      variantLabel: adminResolvedVariantLabel,
+      variantUnit: adminResolvedVariantUnit,
     });
 
     await subscription.save();
@@ -108,8 +129,27 @@ export const createSubscription = async (req, res) => {
     }
 
     // 1️⃣ Calculate price (customers always pay product price — custom rates are admin-only)
-    const pricePerUnit = product.price;
-    const totalPricePerDay = pricePerUnit * parsedQuantityPerDay;
+    let pricePerUnit = product.price;
+    let resolvedVariantId = null;
+    let resolvedVariantLabel = null;
+    let resolvedVariantUnit = null;
+
+    if (product.variants?.length > 0) {
+        const variantId = req.body.variantId;
+        let variant;
+        if (variantId) {
+            variant = product.variants.id(variantId);
+            if (!variant) return res.status(400).json({ message: "Variant not found" });
+        } else {
+            variant = product.variants.find(v => v.isDefault) || product.variants[0];
+        }
+        pricePerUnit = variant.discountedPrice ?? variant.price;
+        resolvedVariantId = variant._id;
+        resolvedVariantLabel = variant.label;
+        resolvedVariantUnit = variant.unit || null;
+    }
+
+    const totalPricePerDay = parseFloat((pricePerUnit * parsedQuantityPerDay).toFixed(2));
 
     // 2️⃣ Calculate next delivery date
     if (deliverySchedule === "custom") {
@@ -151,6 +191,9 @@ export const createSubscription = async (req, res) => {
       startDate,
       pendingAmount: 0,
       deliveryHistory: [],
+      variantId: resolvedVariantId,
+      variantLabel: resolvedVariantLabel,
+      variantUnit: resolvedVariantUnit,
     });
 
     await subscription.save();
@@ -412,6 +455,12 @@ export const getDeliveryBoard = async (req, res) => {
 
                 if (!dueToday && !todayEntry) return null;
 
+                const effectiveUnit = subscription.variantUnit || subscription.productId?.unit || "unit";
+                const productName = subscription.productId?.name || "Unknown Product";
+                const label = subscription.variantLabel
+                    ? `${productName} (${subscription.variantLabel})`
+                    : productName;
+
                 return {
                     id: String(subscription._id),
                     type: "subscription",
@@ -419,9 +468,9 @@ export const getDeliveryBoard = async (req, res) => {
                     phone: subscription.userId?.phone || "",
                     email: subscription.userId?.email || "",
                     address: null,
-                    productLabel: subscription.productId?.name || "Unknown Product",
+                    productLabel: label,
                     quantity: subscription.quantityPerDay,
-                    unit: subscription.productId?.unit || "unit",
+                    unit: effectiveUnit,
                     amount: subscription.totalPricePerDay || 0,
                     schedule: subscription.deliverySchedule,
                     status: subscription.status,
@@ -558,7 +607,7 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
       return d.getTime() === targetDate.getTime();
     });
 
-    const pricePerUnit = subscription.totalPricePerDay / subscription.quantityPerDay;
+    const pricePerUnit = parseFloat((subscription.totalPricePerDay / subscription.quantityPerDay).toFixed(2));
     const scheduledQuantity = subscription.quantityPerDay;
 
     let finalActualQuantity;
@@ -566,13 +615,13 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
 
     if (status === "delivered") {
       finalActualQuantity = scheduledQuantity;
-      finalTotalAmount = finalActualQuantity * pricePerUnit;
+      finalTotalAmount = subscription.totalPricePerDay; // Use exact daily total to avoid rounding drift
     } else if (status === "partial" || status === "extra") {
       if (actualQuantity == null || Number(actualQuantity) <= 0) {
         return res.status(400).json({ message: "actualQuantity is required and must be a positive number for partial/extra." });
       }
       finalActualQuantity = Number(actualQuantity);
-      finalTotalAmount = finalActualQuantity * pricePerUnit;
+      finalTotalAmount = parseFloat((finalActualQuantity * pricePerUnit).toFixed(2));
     } else {
       finalActualQuantity = 0;
       finalTotalAmount = 0;
@@ -614,13 +663,18 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
         subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate);
     }
 
-    await subscription.save();
-
-    // Update user account balance atomically
-    if (balanceAdjustment !== 0) {
-        await User.findByIdAndUpdate(subscription.userId, {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await subscription.save({ session });
+        if (balanceAdjustment !== 0) {
+          await User.findByIdAndUpdate(subscription.userId, {
             $inc: { accountBalance: balanceAdjustment }
-        });
+          }, { session });
+        }
+      });
+    } finally {
+      await session.endSession();
     }
 
     return res.status(200).json({
@@ -668,24 +722,32 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
             return res.status(400).json({ message: "This subscription is already marked delivered today." });
         }
 
+        const entryPricePerUnit = parseFloat((subscription.totalPricePerDay / subscription.quantityPerDay).toFixed(2));
+        const entryTotalAmount = subscription.totalPricePerDay; // Use exact daily total to avoid rounding drift
         const deliveryEntry = {
             deliveryDate: new Date(),
             status: "delivered",
             scheduledQuantity: subscription.quantityPerDay,
             actualQuantity: subscription.quantityPerDay,
-            pricePerUnit: subscription.totalPricePerDay / subscription.quantityPerDay,
-            totalAmount: subscription.totalPricePerDay,
+            pricePerUnit: entryPricePerUnit,
+            totalAmount: entryTotalAmount,
         };
 
         subscription.deliveryHistory.push(deliveryEntry);
-        subscription.pendingAmount += subscription.totalPricePerDay;
+        subscription.pendingAmount += entryTotalAmount;
         subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, today);
-        await subscription.save();
 
-        // Update user account balance
-        await User.findByIdAndUpdate(subscription.userId, {
-            $inc: { accountBalance: subscription.totalPricePerDay }
-        });
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(async () => {
+            await subscription.save({ session });
+            await User.findByIdAndUpdate(subscription.userId, {
+              $inc: { accountBalance: entryTotalAmount }
+            }, { session });
+          });
+        } finally {
+          await session.endSession();
+        }
 
         return res.status(200).json({
             message: "Subscription delivery marked for today.",
@@ -744,7 +806,7 @@ export const updateSubscriptionAdmin = async (req, res) => {
     // else: keep existing sub.pricePerUnit
 
     const effectivePricePerUnit = sub.pricePerUnit || product.price;
-    sub.totalPricePerDay = effectivePricePerUnit * sub.quantityPerDay;
+    sub.totalPricePerDay = parseFloat((effectivePricePerUnit * sub.quantityPerDay).toFixed(2));
 
     // Recalculate next delivery date
     sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date());
@@ -784,7 +846,7 @@ export const updateSubscription = async (req, res) => {
       sub.quantityPerDay = qty;
       // Use the stored pricePerUnit (custom negotiated rate) — falls back to product price for legacy records
       const effectivePricePerUnit = sub.pricePerUnit || sub.productId.price;
-      sub.totalPricePerDay = effectivePricePerUnit * qty;
+      sub.totalPricePerDay = parseFloat((effectivePricePerUnit * qty).toFixed(2));
     }
 
     await sub.save();

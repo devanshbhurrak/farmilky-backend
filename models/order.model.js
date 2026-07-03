@@ -22,7 +22,11 @@ const orderItemSchema = new mongoose.Schema({
     image: {
         type: String,
         required: true,
-    }
+    },
+    originalPrice: { type: Number, default: null },
+    variantId:     { type: mongoose.Schema.Types.ObjectId, default: null },
+    variantLabel:  { type: String, default: null },
+    unit:          { type: String, default: null },
 })
 
 const addressSchema = new mongoose.Schema({

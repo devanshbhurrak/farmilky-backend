@@ -8,8 +8,17 @@ export const createProduct = async (req, res) => {
             return res.status(400).json({message: "Valid name, description, category, positive price and image are required"});
         }
 
+        let variants = req.body.variants || [];
+        if (variants.length > 0) {
+            if (!variants.some(v => v.isDefault)) variants[0].isDefault = true;
+            variants = variants.map(v => ({
+                ...v,
+                discountedPrice: v.discountedPrice === '' ? null : v.discountedPrice,
+            }));
+        }
+
         const newProduct = new Product({
-            name, description, category, price, unit, fatContent, stock, image
+            name, description, category, price, unit, fatContent, stock, image, variants
         })
 
         await newProduct.save();
@@ -59,7 +68,18 @@ export const updateProduct = async (req, res) => {
     try {
         const {id} = req.params
 
-        const updateProduct = await Product.findByIdAndUpdate(id, req.body, {
+        const updateBody = { ...req.body };
+        if (updateBody.variants && Array.isArray(updateBody.variants)) {
+            if (updateBody.variants.length > 0 && !updateBody.variants.some(v => v.isDefault)) {
+                updateBody.variants[0].isDefault = true;
+            }
+            updateBody.variants = updateBody.variants.map(v => ({
+                ...v,
+                discountedPrice: v.discountedPrice === '' ? null : v.discountedPrice,
+            }));
+        }
+
+        const updateProduct = await Product.findByIdAndUpdate(id, updateBody, {
             new: true, runValidators: true
         })
 

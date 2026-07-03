@@ -33,17 +33,38 @@ export const getCustomerPassbook = async (req, res) => {
       });
     });
 
-    // 2. Fetch Orders (Debits)
-    const orders = await Order.find({ userId, orderStatus: "delivered" }).lean();
-    const orderEntries = orders.map(order => ({
-      date: order.deliveredAt || order.createdAt,
-      type: "debit",
-      amount: order.totalAmount,
-      description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
-      notes: order.items.map(i => `${i.name} x${i.quantity}`).join(", "),
-      referenceId: order._id,
-      category: "Order"
-    }));
+    // 2. Fetch Orders (Debits) — include orders that were delivered (even if status later changed)
+    const orders = await Order.find({
+      userId,
+      $or: [{ orderStatus: "delivered" }, { deliveredAt: { $ne: null } }]
+    }).lean();
+    const orderEntries = orders.map(order => {
+      const entry = {
+        date: order.deliveredAt || order.createdAt,
+        type: "debit",
+        amount: order.totalAmount,
+        description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
+        notes: order.items.map(i => `${i.name} x${i.quantity}`).join(", "),
+        referenceId: order._id,
+        category: "Order"
+      };
+      // If order was delivered then status changed (cancelled/reverted), add a credit entry for the reversal
+      if (order.deliveredAt && order.orderStatus !== "delivered") {
+        return [
+          entry,
+          {
+            date: order.cancelledAt || order.updatedAt || order.deliveredAt,
+            type: "credit",
+            amount: order.totalAmount,
+            description: `Order #${order._id.toString().slice(-6).toUpperCase()} Reversed`,
+            notes: `Status changed to ${order.orderStatus}`,
+            referenceId: order._id,
+            category: "Order"
+          }
+        ];
+      }
+      return [entry];
+    }).flat();
 
     // 3. Fetch Payments (Credits)
     const payments = await Payment.find({ userId })

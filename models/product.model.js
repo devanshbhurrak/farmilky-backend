@@ -1,5 +1,16 @@
 import mongoose from "mongoose";
 
+const variantSchema = new mongoose.Schema({
+  label:           { type: String, required: true, trim: true },
+  quantity:        { type: Number, required: true },
+  unit:            { type: String, enum: ['L','ml','kg','g','unit'], required: true },
+  price:           { type: Number, required: true, min: 0 },
+  discountedPrice: { type: Number, default: null, min: 0 },
+  stock:           { type: Number, default: 100 },
+  isDefault:       { type: Boolean, default: false },
+  isAvailable:     { type: Boolean, default: true },
+}, { _id: true });
+
 const productSchema = new mongoose.Schema({
     name: {
         type: String,
@@ -40,7 +51,8 @@ const productSchema = new mongoose.Schema({
     isAvailable: {
         type: Boolean,
         default: true,
-    }
+    },
+    variants: { type: [variantSchema], default: [] }
 
 }, {timestamps: true});
 

@@ -10,7 +10,9 @@ const cartItemSchema = new mongoose.Schema({
         type: Number,
         required: true,
         min: 1
-    }
+    },
+    variantId:    { type: mongoose.Schema.Types.ObjectId, default: null },
+    variantLabel: { type: String, default: null },
 })
 
 const cartSchema = new mongoose.Schema({
