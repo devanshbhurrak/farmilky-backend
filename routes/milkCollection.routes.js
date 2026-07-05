@@ -8,6 +8,7 @@ import {
   bulkConfirmDay,
   getCollectionHistory,
   updateCollection,
+  getMissingCollections,
 } from "../controllers/milkCollection.controller.js";
 
 const router = Router();
@@ -18,6 +19,9 @@ router.use(authMiddleware, adminOnly);
 router.get("/daily", getDailyConfirmation);
 router.post("/generate", generateDailyCollections);
 router.post("/bulk-confirm", bulkConfirmDay);
+
+// Missing entries check
+router.get("/missing", getMissingCollections);
 
 // History and CRUD
 router.get("/", getCollectionHistory);

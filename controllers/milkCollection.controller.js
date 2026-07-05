@@ -8,68 +8,77 @@ function toUTCMidnight(dateInput) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
+// Idempotently ensures pending collection entries exist for all active suppliers on a given date.
+// Uses $setOnInsert so existing entries (pending or confirmed) are never overwritten.
+async function ensureDailyEntries(targetDate) {
+  const suppliers = await Supplier.find({ isActive: true, isDeleted: false }).select(
+    "collectionSessions defaultMorningQty defaultEveningQty defaultRatePerLiter name"
+  );
+
+  if (suppliers.length === 0) return { generated: 0 };
+
+  const ops = [];
+  for (const supplier of suppliers) {
+    const sessions = supplier.collectionSessions || [];
+    for (const session of sessions) {
+      const defaultQty =
+        session === "morning" ? supplier.defaultMorningQty : supplier.defaultEveningQty;
+      if (!defaultQty || defaultQty <= 0) continue;
+
+      ops.push({
+        updateOne: {
+          filter: { supplierId: supplier._id, date: targetDate, session },
+          update: {
+            $setOnInsert: {
+              supplierId: supplier._id,
+              date: targetDate,
+              session,
+              expectedQty: defaultQty,
+              ratePerLiter: supplier.defaultRatePerLiter || 0,
+              status: "pending",
+              actualQty: null,
+              fatContent: null,
+              snf: null,
+              totalAmount: null,
+              paymentId: null,
+              confirmedBy: null,
+              confirmedAt: null,
+              notes: "",
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
+  }
+
+  if (ops.length === 0) return { generated: 0 };
+
+  try {
+    const result = await MilkCollection.bulkWrite(ops, { ordered: false });
+    return { generated: result.upsertedCount || 0 };
+  } catch (err) {
+    // With ordered:false, a BulkWriteError means some ops succeeded and some failed.
+    // Log the failures but return partial success so the daily view still loads.
+    console.error("ensureDailyEntries bulkWrite partial failure:", err?.writeErrors?.length ?? 0, "errors");
+    const upserted = err?.result?.upsertedCount || 0;
+    return { generated: upserted };
+  }
+}
+
 // Generate today's (or a given date's) pending collection entries for all active suppliers.
-// Idempotent: uses $setOnInsert so existing entries are never overwritten.
 export const generateDailyCollections = async (req, res) => {
   try {
     const rawDate = req.body.date || req.query.date || new Date().toISOString().split("T")[0];
     const targetDate = toUTCMidnight(rawDate);
 
-    const suppliers = await Supplier.find({ isActive: true, isDeleted: false })
-      .select("collectionSessions defaultMorningQty defaultEveningQty defaultRatePerLiter name");
-
-    if (suppliers.length === 0) {
-      return res.status(200).json({ message: "No active suppliers found.", generated: 0 });
-    }
-
-    const ops = [];
-    for (const supplier of suppliers) {
-      const sessions = supplier.collectionSessions || [];
-      for (const session of sessions) {
-        const defaultQty =
-          session === "morning" ? supplier.defaultMorningQty : supplier.defaultEveningQty;
-
-        // Skip sessions with 0 expected quantity
-        if (!defaultQty || defaultQty <= 0) continue;
-
-        ops.push({
-          updateOne: {
-            filter: { supplierId: supplier._id, date: targetDate, session },
-            update: {
-              $setOnInsert: {
-                supplierId: supplier._id,
-                date: targetDate,
-                session,
-                expectedQty: defaultQty,
-                ratePerLiter: supplier.defaultRatePerLiter || 0,
-                status: "pending",
-                actualQty: null,
-                fatContent: null,
-                snf: null,
-                totalAmount: null,
-                paymentId: null,
-                confirmedBy: null,
-                confirmedAt: null,
-                notes: "",
-              },
-            },
-            upsert: true,
-          },
-        });
-      }
-    }
-
-    if (ops.length === 0) {
-      return res.status(200).json({ message: "No sessions with non-zero quantity to generate.", generated: 0 });
-    }
-
-    const result = await MilkCollection.bulkWrite(ops, { ordered: false });
-    const generated = result.upsertedCount || 0;
+    const { generated } = await ensureDailyEntries(targetDate);
 
     res.status(200).json({
-      message: generated > 0
-        ? `Generated ${generated} collection entries.`
-        : "Entries already exist for this date — no changes made.",
+      message:
+        generated > 0
+          ? `Generated ${generated} collection entries.`
+          : "Entries already exist for this date — no changes made.",
       generated,
       date: targetDate.toISOString().split("T")[0],
     });
@@ -79,18 +88,27 @@ export const generateDailyCollections = async (req, res) => {
   }
 };
 
-// Get all entries for a specific date (daily confirmation screen)
+// Get all entries for a specific date (daily confirmation screen).
+// Auto-generates pending entries before fetching so users never need to manually generate.
 export const getDailyConfirmation = async (req, res) => {
   try {
     const rawDate = req.query.date || new Date().toISOString().split("T")[0];
     const targetDate = toUTCMidnight(rawDate);
+
+    // Auto-generate entries (idempotent — safe to call every time).
+    // Non-fatal: if generation fails, we still return any existing entries.
+    try {
+      await ensureDailyEntries(targetDate);
+    } catch (genErr) {
+      console.error("Auto-generate entries failed, continuing with existing data:", genErr);
+    }
 
     const collections = await MilkCollection.find({ date: targetDate })
       .populate("supplierId", "name phone location defaultRatePerLiter")
       .populate("confirmedBy", "name")
       .lean();
 
-    // Sort in JS — populated fields can't be used in DB-level sort
+    // Sort by supplier name, then session order
     collections.sort((a, b) => {
       const nameA = (a.supplierId?.name || "").toLowerCase();
       const nameB = (b.supplierId?.name || "").toLowerCase();
@@ -111,7 +129,11 @@ export const getDailyConfirmation = async (req, res) => {
         .reduce((sum, c) => sum + (c.totalAmount || 0), 0),
     };
 
-    res.status(200).json({ collections, summary, date: targetDate.toISOString().split("T")[0] });
+    res.status(200).json({
+      collections,
+      summary,
+      date: targetDate.toISOString().split("T")[0],
+    });
   } catch (error) {
     console.error("Get Daily Confirmation Error:", error);
     res.status(500).json({ message: "Failed to fetch daily collections." });
@@ -149,7 +171,7 @@ export const confirmCollection = async (req, res) => {
         },
       },
       { new: true, runValidators: true }
-    ).populate("supplierId", "name phone");
+    ).populate("supplierId", "name phone").populate("confirmedBy", "name");
 
     if (!collection) {
       return res.status(404).json({ message: "Collection not found or already confirmed." });
@@ -205,14 +227,15 @@ export const bulkConfirmDay = async (req, res) => {
   }
 };
 
-// Get collection history with filters
+// Get collection history with filters and summary aggregation
 export const getCollectionHistory = async (req, res) => {
   try {
-    const { supplierId, from, to, status, page = 1, limit = 50 } = req.query;
+    const { supplierId, from, to, status, session, page = 1, limit = 50 } = req.query;
 
     const filter = {};
     if (supplierId) filter.supplierId = new mongoose.Types.ObjectId(supplierId);
     if (status) filter.status = status;
+    if (session) filter.session = session;
     if (from || to) {
       filter.date = {};
       if (from) filter.date.$gte = toUTCMidnight(from);
@@ -220,17 +243,38 @@ export const getCollectionHistory = async (req, res) => {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [collections, total] = await Promise.all([
-      MilkCollection.find(filter)
+    const [collections, total, summaryResult] = await Promise.all([
+      MilkCollection.find({ ...filter })
         .populate("supplierId", "name phone")
         .populate("confirmedBy", "name")
         .sort({ date: -1, session: 1 })
         .skip(skip)
         .limit(Number(limit)),
-      MilkCollection.countDocuments(filter),
+      MilkCollection.countDocuments({ ...filter }),
+      MilkCollection.aggregate([
+        { $match: { ...filter } },
+        {
+          $group: {
+            _id: null,
+            totalLiters: { $sum: { $ifNull: ["$actualQty", 0] } },
+            totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+            avgFat: { $avg: "$fatContent" },
+            avgSNF: { $avg: "$snf" },
+          },
+        },
+      ]),
     ]);
 
-    res.status(200).json({ collections, total, page: Number(page), limit: Number(limit) });
+    const summary = summaryResult[0]
+      ? {
+          totalLiters: summaryResult[0].totalLiters || 0,
+          totalAmount: summaryResult[0].totalAmount || 0,
+          avgFat: summaryResult[0].avgFat != null ? parseFloat(summaryResult[0].avgFat.toFixed(2)) : null,
+          avgSNF: summaryResult[0].avgSNF != null ? parseFloat(summaryResult[0].avgSNF.toFixed(2)) : null,
+        }
+      : { totalLiters: 0, totalAmount: 0, avgFat: null, avgSNF: null };
+
+    res.status(200).json({ collections, total, page: Number(page), limit: Number(limit), summary });
   } catch (error) {
     console.error("Get Collection History Error:", error);
     res.status(500).json({ message: "Failed to fetch collection history." });
@@ -259,7 +303,6 @@ export const updateCollection = async (req, res) => {
       ...(notes !== undefined && { notes }),
     };
 
-    // Recalculate totalAmount if qty or rate changed and entry is confirmed
     if (collection.status === "confirmed" && (actualQty !== undefined || ratePerLiter !== undefined)) {
       updates.totalAmount = parseFloat((newQty * newRate).toFixed(2));
     }
@@ -274,5 +317,80 @@ export const updateCollection = async (req, res) => {
   } catch (error) {
     console.error("Update Collection Error:", error);
     res.status(500).json({ message: "Failed to update collection." });
+  }
+};
+
+// Find missing collection entries for a date range.
+// A missing entry = an active supplier has a session with defaultQty > 0 but no MilkCollection record for that date+session.
+export const getMissingCollections = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ message: "from and to dates are required." });
+    }
+
+    const fromDate = toUTCMidnight(from);
+    const toDate = toUTCMidnight(to);
+
+    // Build list of expected (supplierId, date, session) tuples
+    const suppliers = await Supplier.find({ isActive: true, isDeleted: false }).select(
+      "name collectionSessions defaultMorningQty defaultEveningQty"
+    ).lean();
+
+    // Build expected set as "supplierId|YYYY-MM-DD|session" keys for fast lookup
+    const expectedList = [];
+    const current = new Date(fromDate);
+    while (current <= toDate) {
+      // Format date as YYYY-MM-DD (UTC) — used as the Set key
+      const dateKey = current.toISOString().split("T")[0];
+      for (const supplier of suppliers) {
+        for (const session of (supplier.collectionSessions || [])) {
+          const qty = session === "morning" ? supplier.defaultMorningQty : supplier.defaultEveningQty;
+          if (!qty || qty <= 0) continue;
+          expectedList.push({
+            supplierId: supplier._id.toString(),
+            supplierName: supplier.name,
+            dateKey,
+            session,
+          });
+        }
+      }
+      current.setUTCDate(current.getUTCDate() + 1);
+    }
+
+    if (expectedList.length === 0) {
+      return res.status(200).json({ missing: [], total: 0 });
+    }
+
+    // Fetch all existing records in the range
+    const existing = await MilkCollection.find({
+      date: { $gte: fromDate, $lte: toDate },
+    }).select("supplierId date session").lean();
+
+    // Normalize existing dates to UTC midnight YYYY-MM-DD strings for consistent comparison
+    const existingSet = new Set(
+      existing.map((c) => {
+        const d = toUTCMidnight(c.date);
+        const dateKey = d.toISOString().split("T")[0];
+        return `${c.supplierId}|${dateKey}|${c.session}`;
+      })
+    );
+
+    const missing = expectedList.filter(
+      (e) => !existingSet.has(`${e.supplierId}|${e.dateKey}|${e.session}`)
+    );
+
+    res.status(200).json({
+      missing: missing.map((m) => ({
+        supplierId: m.supplierId,
+        supplierName: m.supplierName,
+        date: m.dateKey,
+        session: m.session,
+      })),
+      total: missing.length,
+    });
+  } catch (error) {
+    console.error("Get Missing Collections Error:", error);
+    res.status(500).json({ message: "Failed to check missing collections." });
   }
 };
