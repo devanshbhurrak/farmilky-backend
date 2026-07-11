@@ -48,6 +48,10 @@ const supplierPaymentSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    collectionTotal: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

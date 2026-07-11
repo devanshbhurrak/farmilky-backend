@@ -85,6 +85,14 @@ const supplierSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    supplyBalance: {
+      type: Number,
+      default: 0,
+    },
+    passbookBalance: {
+      type: Number,
+      default: 0,
+    },
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

@@ -11,30 +11,10 @@ export const getAllSuppliers = async (req, res) => {
     const suppliers = await Supplier.aggregate([
       { $match: match },
       {
-        $lookup: {
-          from: "milkcollections",
-          let: { sid: "$_id" },
-          pipeline: [
-            {
-              $match: {
-                $expr: { $eq: ["$supplierId", "$$sid"] },
-                status: "confirmed",
-                paymentId: null,
-              },
-            },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-          ],
-          as: "_outstanding",
-        },
-      },
-      {
         $addFields: {
-          outstandingAmount: {
-            $ifNull: [{ $arrayElemAt: ["$_outstanding.total", 0] }, 0],
-          },
+          outstandingAmount: { $add: ["$supplyBalance", "$passbookBalance"] },
         },
       },
-      { $project: { _outstanding: 0 } },
       { $sort: { createdAt: -1 } },
     ]);
 
@@ -52,30 +32,10 @@ export const getSupplierById = async (req, res) => {
     const [supplier] = await Supplier.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(id) } },
       {
-        $lookup: {
-          from: "milkcollections",
-          let: { sid: "$_id" },
-          pipeline: [
-            {
-              $match: {
-                $expr: { $eq: ["$supplierId", "$$sid"] },
-                status: "confirmed",
-                paymentId: null,
-              },
-            },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-          ],
-          as: "_outstanding",
-        },
-      },
-      {
         $addFields: {
-          outstandingAmount: {
-            $ifNull: [{ $arrayElemAt: ["$_outstanding.total", 0] }, 0],
-          },
+          outstandingAmount: { $add: ["$supplyBalance", "$passbookBalance"] },
         },
       },
-      { $project: { _outstanding: 0 } },
     ]);
 
     if (!supplier) {

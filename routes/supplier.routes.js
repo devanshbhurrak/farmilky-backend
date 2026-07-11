@@ -9,6 +9,11 @@ import {
   deleteSupplier,
   toggleSupplierStatus,
 } from "../controllers/supplier.controller.js";
+import {
+  getSupplierPassbook,
+  createAdjustment,
+  deleteAdjustment,
+} from "../controllers/supplierAdjustment.controller.js";
 
 const router = Router();
 
@@ -20,5 +25,9 @@ router.get("/:id", getSupplierById);
 router.put("/:id", updateSupplier);
 router.delete("/:id", deleteSupplier);
 router.patch("/:id/status", toggleSupplierStatus);
+
+router.get("/:supplierId/passbook", getSupplierPassbook);
+router.post("/:supplierId/adjustments", createAdjustment);
+router.delete("/:supplierId/adjustments/:id", deleteAdjustment);
 
 export default router;

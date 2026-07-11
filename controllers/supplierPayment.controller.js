@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import SupplierPayment from "../models/supplierPayment.model.js";
 import MilkCollection from "../models/milkCollection.model.js";
 import Supplier from "../models/supplier.model.js";
+import SupplierAdjustment from "../models/supplierAdjustment.model.js";
 
 function toUTCMidnight(dateInput) {
   const d = new Date(dateInput);
@@ -51,6 +52,47 @@ export const getOutstandingBySupplier = async (req, res) => {
   }
 };
 
+// Get collection total for a date range (used by payment modal preview)
+export const getCollectionTotalForPeriod = async (req, res) => {
+  try {
+    const { supplierId, from: fromDate, to: toDate } = req.query;
+
+    if (!supplierId || !fromDate || !toDate) {
+      return res.status(400).json({ message: "supplierId, from, and to are required." });
+    }
+
+    const from = toUTCMidnight(fromDate);
+    const to = toUTCMidnight(toDate);
+
+    const result = await MilkCollection.aggregate([
+      {
+        $match: {
+          supplierId: new mongoose.Types.ObjectId(supplierId),
+          date: { $gte: from, $lte: to },
+          status: "confirmed",
+          paymentId: null,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          collectionTotal: { $sum: "$totalAmount" },
+          collectionCount: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const data = result[0] || { collectionTotal: 0, collectionCount: 0 };
+    res.status(200).json({
+      collectionTotal: parseFloat(data.collectionTotal.toFixed(2)),
+      collectionCount: data.collectionCount,
+    });
+  } catch (error) {
+    console.error("Get Collection Total Error:", error);
+    res.status(500).json({ message: "Failed to fetch collection total." });
+  }
+};
+
 // Record a payment for a supplier and mark covered collections as paid
 export const recordPayment = async (req, res) => {
   try {
@@ -68,13 +110,14 @@ export const recordPayment = async (req, res) => {
       return res.status(404).json({ message: "Supplier not found." });
     }
 
+    const paymentAmount = Number(amount);
     const from = toUTCMidnight(fromDate);
     const to = toUTCMidnight(toDate);
 
-    // Create the payment record first
+    // Create the payment record
     const payment = await SupplierPayment.create({
       supplierId,
-      amount: Number(amount),
+      amount: paymentAmount,
       fromDate: from,
       toDate: to,
       paymentMethod: paymentMethod || "cash",
@@ -83,26 +126,76 @@ export const recordPayment = async (req, res) => {
       recordedBy: req.user._id,
       paidAt: paidAt ? new Date(paidAt) : new Date(),
       collectionCount: 0,
+      collectionTotal: 0,
     });
 
     // Mark qualifying confirmed collections as paid
+    const collectionFilter = {
+      supplierId: new mongoose.Types.ObjectId(supplierId),
+      date: { $gte: from, $lte: to },
+      status: "confirmed",
+      paymentId: null,
+    };
+
     const updateResult = await MilkCollection.updateMany(
-      {
-        supplierId: new mongoose.Types.ObjectId(supplierId),
-        date: { $gte: from, $lte: to },
-        status: "confirmed",
-        paymentId: null,
-      },
+      collectionFilter,
       { $set: { paymentId: payment._id } }
     );
 
-    // Update the collectionCount snapshot on the payment
+    // Compute the total of collections just marked as paid
+    const totalResult = await MilkCollection.aggregate([
+      { $match: { paymentId: payment._id } },
+      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+    ]);
+    const collectionTotal = parseFloat((totalResult[0]?.total || 0).toFixed(2));
+
+    // Update payment snapshot
     payment.collectionCount = updateResult.modifiedCount;
+    payment.collectionTotal = collectionTotal;
     await payment.save();
+
+    // Decrement supplyBalance by collection total (what was actually settled)
+    if (collectionTotal > 0) {
+      await Supplier.updateOne(
+        { _id: supplierId },
+        { $inc: { supplyBalance: -collectionTotal } }
+      );
+    }
+
+    // Handle payment difference → auto-create passbook adjustment
+    let adjustment = null;
+    const diff = parseFloat((paymentAmount - collectionTotal).toFixed(2));
+
+    if (Math.abs(diff) > 0.01) {
+      // diff > 0: overpaid (supplier got extra) → debit adjustment (reduces passbookBalance)
+      // diff < 0: underpaid (supplier still owed) → credit adjustment (increases passbookBalance)
+      const adjType = diff > 0 ? "debit" : "credit";
+      const adjAmount = parseFloat(Math.abs(diff).toFixed(2));
+
+      adjustment = await SupplierAdjustment.create({
+        supplierId,
+        type: adjType,
+        category: "payment_difference",
+        amount: adjAmount,
+        date: paidAt ? new Date(paidAt) : new Date(),
+        description: `Payment difference: paid ₹${paymentAmount} against ₹${collectionTotal} collections`,
+        notes: "",
+        recordedBy: req.user._id,
+        paymentId: payment._id,
+      });
+
+      const passbookDelta = adjType === "credit" ? adjAmount : -adjAmount;
+      await Supplier.updateOne(
+        { _id: supplierId },
+        { $inc: { passbookBalance: passbookDelta } }
+      );
+    }
 
     res.status(201).json({
       message: `Payment recorded. ${updateResult.modifiedCount} collection(s) marked as paid.`,
       payment,
+      collectionTotal,
+      adjustment,
     });
   } catch (error) {
     console.error("Record Payment Error:", error);

@@ -177,6 +177,11 @@ export const confirmCollection = async (req, res) => {
       return res.status(404).json({ message: "Collection not found or already confirmed." });
     }
 
+    await Supplier.updateOne(
+      { _id: collection.supplierId._id || collection.supplierId },
+      { $inc: { supplyBalance: totalAmount } }
+    );
+
     res.status(200).json({ message: "Collection confirmed.", collection });
   } catch (error) {
     console.error("Confirm Collection Error:", error);
@@ -217,6 +222,21 @@ export const bulkConfirmDay = async (req, res) => {
     });
 
     const result = await MilkCollection.bulkWrite(bulkOps);
+
+    // Update supplyBalance for each affected supplier
+    if (result.modifiedCount > 0) {
+      const balanceOps = pending.map((c) => {
+        const qty = c.expectedQty || 0;
+        const rate = c.ratePerLiter || 0;
+        const amount = parseFloat((qty * rate).toFixed(2));
+        return Supplier.updateOne(
+          { _id: c.supplierId },
+          { $inc: { supplyBalance: amount } }
+        );
+      });
+      await Promise.all(balanceOps);
+    }
+
     res.status(200).json({
       message: `Confirmed ${result.modifiedCount} collection entries.`,
       confirmed: result.modifiedCount,
@@ -304,7 +324,12 @@ export const updateCollection = async (req, res) => {
     };
 
     if (collection.status === "confirmed" && (actualQty !== undefined || ratePerLiter !== undefined)) {
+      const oldAmount = collection.totalAmount || 0;
       updates.totalAmount = parseFloat((newQty * newRate).toFixed(2));
+      await Supplier.updateOne(
+        { _id: collection.supplierId },
+        { $inc: { supplyBalance: updates.totalAmount - oldAmount } }
+      );
     }
 
     const updated = await MilkCollection.findByIdAndUpdate(
