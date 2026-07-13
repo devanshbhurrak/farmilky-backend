@@ -155,32 +155,47 @@ export const confirmCollection = async (req, res) => {
 
     const totalAmount = parseFloat((actualQty * ratePerLiter).toFixed(2));
 
-    const collection = await MilkCollection.findOneAndUpdate(
-      { _id: id, status: "pending" },
-      {
-        $set: {
-          actualQty: Number(actualQty),
-          ratePerLiter: Number(ratePerLiter),
-          totalAmount,
-          ...(fatContent !== undefined && { fatContent: fatContent !== null ? Number(fatContent) : null }),
-          ...(snf !== undefined && { snf: snf !== null ? Number(snf) : null }),
-          ...(notes !== undefined && { notes }),
-          status: "confirmed",
-          confirmedBy: req.user._id,
-          confirmedAt: new Date(),
-        },
-      },
-      { new: true, runValidators: true }
-    ).populate("supplierId", "name phone").populate("confirmedBy", "name");
+    const session = await mongoose.startSession();
+    let collection;
 
-    if (!collection) {
-      return res.status(404).json({ message: "Collection not found or already confirmed." });
+    try {
+      await session.withTransaction(async () => {
+        collection = await MilkCollection.findOneAndUpdate(
+          { _id: id, status: "pending" },
+          {
+            $set: {
+              actualQty: Number(actualQty),
+              ratePerLiter: Number(ratePerLiter),
+              totalAmount,
+              ...(fatContent !== undefined && { fatContent: fatContent !== null ? Number(fatContent) : null }),
+              ...(snf !== undefined && { snf: snf !== null ? Number(snf) : null }),
+              ...(notes !== undefined && { notes }),
+              status: "confirmed",
+              confirmedBy: req.user._id,
+              confirmedAt: new Date(),
+            },
+          },
+          { new: true, runValidators: true, session }
+        ).populate("supplierId", "name phone").populate("confirmedBy", "name");
+
+        if (!collection) {
+          throw new Error("COLLECTION_NOT_FOUND");
+        }
+
+        await Supplier.updateOne(
+          { _id: collection.supplierId._id || collection.supplierId },
+          { $inc: { supplyBalance: totalAmount } },
+          { session }
+        );
+      });
+    } catch (err) {
+      if (err.message === "COLLECTION_NOT_FOUND") {
+        return res.status(404).json({ message: "Collection not found or already confirmed." });
+      }
+      throw err;
+    } finally {
+      await session.endSession();
     }
-
-    await Supplier.updateOne(
-      { _id: collection.supplierId._id || collection.supplierId },
-      { $inc: { supplyBalance: totalAmount } }
-    );
 
     res.status(200).json({ message: "Collection confirmed.", collection });
   } catch (error) {
@@ -221,25 +236,43 @@ export const bulkConfirmDay = async (req, res) => {
       };
     });
 
-    const result = await MilkCollection.bulkWrite(bulkOps);
+    const session = await mongoose.startSession();
+    let modifiedCount = 0;
 
-    // Update supplyBalance for each affected supplier
-    if (result.modifiedCount > 0) {
-      const balanceOps = pending.map((c) => {
-        const qty = c.expectedQty || 0;
-        const rate = c.ratePerLiter || 0;
-        const amount = parseFloat((qty * rate).toFixed(2));
-        return Supplier.updateOne(
-          { _id: c.supplierId },
-          { $inc: { supplyBalance: amount } }
-        );
+    try {
+      await session.withTransaction(async () => {
+        const result = await MilkCollection.bulkWrite(bulkOps, { session });
+        modifiedCount = result.modifiedCount;
+
+        // Update supplyBalance for each affected supplier
+        if (modifiedCount > 0) {
+          // Aggregate amounts per supplier to minimize DB calls
+          const supplierTotals = {};
+          for (const c of pending) {
+            const qty = c.expectedQty || 0;
+            const rate = c.ratePerLiter || 0;
+            const amount = parseFloat((qty * rate).toFixed(2));
+            const sid = c.supplierId.toString();
+            supplierTotals[sid] = (supplierTotals[sid] || 0) + amount;
+          }
+
+          const balanceOps = Object.entries(supplierTotals).map(([sid, total]) =>
+            Supplier.updateOne(
+              { _id: sid },
+              { $inc: { supplyBalance: total } },
+              { session }
+            )
+          );
+          await Promise.all(balanceOps);
+        }
       });
-      await Promise.all(balanceOps);
+    } finally {
+      await session.endSession();
     }
 
     res.status(200).json({
-      message: `Confirmed ${result.modifiedCount} collection entries.`,
-      confirmed: result.modifiedCount,
+      message: `Confirmed ${modifiedCount} collection entries.`,
+      confirmed: modifiedCount,
     });
   } catch (error) {
     console.error("Bulk Confirm Day Error:", error);

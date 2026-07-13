@@ -69,19 +69,32 @@ export const createAdjustment = async (req, res) => {
     const supplier = await Supplier.findOne({ _id: supplierId, isDeleted: false });
     if (!supplier) return res.status(404).json({ message: "Supplier not found." });
 
-    const adjustment = await SupplierAdjustment.create({
-      supplierId,
-      type,
-      category,
-      amount: Number(amount),
-      date: new Date(date),
-      description,
-      notes: notes || "",
-      recordedBy: req.user._id,
-    });
-
     const balanceDelta = type === "credit" ? Number(amount) : -Number(amount);
-    await Supplier.updateOne({ _id: supplierId }, { $inc: { passbookBalance: balanceDelta } });
+    let adjustment;
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        [adjustment] = await SupplierAdjustment.create([{
+          supplierId,
+          type,
+          category,
+          amount: Number(amount),
+          date: new Date(date),
+          description,
+          notes: notes || "",
+          recordedBy: req.user._id,
+        }], { session });
+
+        await Supplier.updateOne(
+          { _id: supplierId },
+          { $inc: { passbookBalance: balanceDelta } },
+          { session }
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
 
     res.status(201).json({ message: "Adjustment recorded.", adjustment });
   } catch (error) {
@@ -102,8 +115,20 @@ export const deleteAdjustment = async (req, res) => {
     }
 
     const reverseDelta = adjustment.type === "credit" ? -adjustment.amount : adjustment.amount;
-    await Supplier.updateOne({ _id: supplierId }, { $inc: { passbookBalance: reverseDelta } });
-    await adjustment.deleteOne();
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await Supplier.updateOne(
+          { _id: supplierId },
+          { $inc: { passbookBalance: reverseDelta } },
+          { session }
+        );
+        await SupplierAdjustment.findByIdAndDelete(id, { session });
+      });
+    } finally {
+      await session.endSession();
+    }
 
     res.status(200).json({ message: "Adjustment deleted." });
   } catch (error) {

@@ -114,85 +114,95 @@ export const recordPayment = async (req, res) => {
     const from = toUTCMidnight(fromDate);
     const to = toUTCMidnight(toDate);
 
-    // Create the payment record
-    const payment = await SupplierPayment.create({
-      supplierId,
-      amount: paymentAmount,
-      fromDate: from,
-      toDate: to,
-      paymentMethod: paymentMethod || "cash",
-      transactionRef: transactionRef || "",
-      notes: notes || "",
-      recordedBy: req.user._id,
-      paidAt: paidAt ? new Date(paidAt) : new Date(),
-      collectionCount: 0,
-      collectionTotal: 0,
-    });
+    const session = await mongoose.startSession();
+    let payment, collectionTotal, adjustment = null, modifiedCount = 0;
 
-    // Mark qualifying confirmed collections as paid
-    const collectionFilter = {
-      supplierId: new mongoose.Types.ObjectId(supplierId),
-      date: { $gte: from, $lte: to },
-      status: "confirmed",
-      paymentId: null,
-    };
+    try {
+      await session.withTransaction(async () => {
+        // Create the payment record
+        [payment] = await SupplierPayment.create([{
+          supplierId,
+          amount: paymentAmount,
+          fromDate: from,
+          toDate: to,
+          paymentMethod: paymentMethod || "cash",
+          transactionRef: transactionRef || "",
+          notes: notes || "",
+          recordedBy: req.user._id,
+          paidAt: paidAt ? new Date(paidAt) : new Date(),
+          collectionCount: 0,
+          collectionTotal: 0,
+        }], { session });
 
-    const updateResult = await MilkCollection.updateMany(
-      collectionFilter,
-      { $set: { paymentId: payment._id } }
-    );
+        // Mark qualifying confirmed collections as paid
+        const collectionFilter = {
+          supplierId: new mongoose.Types.ObjectId(supplierId),
+          date: { $gte: from, $lte: to },
+          status: "confirmed",
+          paymentId: null,
+        };
 
-    // Compute the total of collections just marked as paid
-    const totalResult = await MilkCollection.aggregate([
-      { $match: { paymentId: payment._id } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-    ]);
-    const collectionTotal = parseFloat((totalResult[0]?.total || 0).toFixed(2));
+        const updateResult = await MilkCollection.updateMany(
+          collectionFilter,
+          { $set: { paymentId: payment._id } },
+          { session }
+        );
+        modifiedCount = updateResult.modifiedCount;
 
-    // Update payment snapshot
-    payment.collectionCount = updateResult.modifiedCount;
-    payment.collectionTotal = collectionTotal;
-    await payment.save();
+        // Compute the total of collections just marked as paid
+        const totalResult = await MilkCollection.aggregate([
+          { $match: { paymentId: payment._id } },
+          { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+        ]).session(session);
+        collectionTotal = parseFloat((totalResult[0]?.total || 0).toFixed(2));
 
-    // Decrement supplyBalance by collection total (what was actually settled)
-    if (collectionTotal > 0) {
-      await Supplier.updateOne(
-        { _id: supplierId },
-        { $inc: { supplyBalance: -collectionTotal } }
-      );
-    }
+        // Update payment snapshot
+        payment.collectionCount = modifiedCount;
+        payment.collectionTotal = collectionTotal;
+        await payment.save({ session });
 
-    // Handle payment difference → auto-create passbook adjustment
-    let adjustment = null;
-    const diff = parseFloat((paymentAmount - collectionTotal).toFixed(2));
+        // Decrement supplyBalance by collection total (what was actually settled)
+        if (collectionTotal > 0) {
+          await Supplier.updateOne(
+            { _id: supplierId },
+            { $inc: { supplyBalance: -collectionTotal } },
+            { session }
+          );
+        }
 
-    if (Math.abs(diff) > 0.01) {
-      // diff > 0: overpaid (supplier got extra) → debit adjustment (reduces passbookBalance)
-      // diff < 0: underpaid (supplier still owed) → credit adjustment (increases passbookBalance)
-      const adjType = diff > 0 ? "debit" : "credit";
-      const adjAmount = parseFloat(Math.abs(diff).toFixed(2));
+        // Handle payment difference → auto-create passbook adjustment
+        const diff = parseFloat((paymentAmount - collectionTotal).toFixed(2));
 
-      adjustment = await SupplierAdjustment.create({
-        supplierId,
-        type: adjType,
-        category: "payment_difference",
-        amount: adjAmount,
-        date: paidAt ? new Date(paidAt) : new Date(),
-        description: `Payment difference: paid ₹${paymentAmount} against ₹${collectionTotal} collections`,
-        notes: "",
-        recordedBy: req.user._id,
-        paymentId: payment._id,
+        if (Math.abs(diff) > 0.01) {
+          const adjType = diff > 0 ? "debit" : "credit";
+          const adjAmount = parseFloat(Math.abs(diff).toFixed(2));
+
+          [adjustment] = await SupplierAdjustment.create([{
+            supplierId,
+            type: adjType,
+            category: "payment_difference",
+            amount: adjAmount,
+            date: paidAt ? new Date(paidAt) : new Date(),
+            description: `Payment difference: paid ₹${paymentAmount} against ₹${collectionTotal} collections`,
+            notes: "",
+            recordedBy: req.user._id,
+            paymentId: payment._id,
+          }], { session });
+
+          const passbookDelta = adjType === "credit" ? adjAmount : -adjAmount;
+          await Supplier.updateOne(
+            { _id: supplierId },
+            { $inc: { passbookBalance: passbookDelta } },
+            { session }
+          );
+        }
       });
-
-      const passbookDelta = adjType === "credit" ? adjAmount : -adjAmount;
-      await Supplier.updateOne(
-        { _id: supplierId },
-        { $inc: { passbookBalance: passbookDelta } }
-      );
+    } finally {
+      await session.endSession();
     }
 
     res.status(201).json({
-      message: `Payment recorded. ${updateResult.modifiedCount} collection(s) marked as paid.`,
+      message: `Payment recorded. ${modifiedCount} collection(s) marked as paid.`,
       payment,
       collectionTotal,
       adjustment,

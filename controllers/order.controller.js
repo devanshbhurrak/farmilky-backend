@@ -13,6 +13,9 @@ export const updateOrderAdmin = async (req, res) => {
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    const oldTotalAmount = order.totalAmount;
+    const oldStatus = order.orderStatus;
+
     if (address) {
       order.address = address;
       if (address.pincode) {
@@ -67,31 +70,86 @@ export const updateOrderAdmin = async (req, res) => {
     if (paymentStatus) order.paymentStatus = paymentStatus;
 
     let balanceAdjustment = 0;
-    if (orderStatus && orderStatus !== order.orderStatus) {
-      // Calculate adjustment
-      if (order.orderStatus === "delivered") {
-        // Was delivered, now something else -> Subtract amount (Credit reversal)
-        balanceAdjustment -= order.totalAmount;
+    const statusChanged = orderStatus && orderStatus !== oldStatus;
+
+    if (statusChanged) {
+      if (oldStatus === "delivered") {
+        // Was delivered, now something else -> reverse using OLD amount
+        balanceAdjustment -= oldTotalAmount;
       }
-      
+
       order.orderStatus = orderStatus;
-      
+
       if (orderStatus === "delivered") {
-        // Now delivered -> Add amount (Debit)
         balanceAdjustment += order.totalAmount;
         if (!order.deliveredAt) order.deliveredAt = Date.now();
       }
-      
+
       if (orderStatus === "cancelled" && !order.cancelledAt) order.cancelledAt = Date.now();
+    } else if (order.orderStatus === "delivered" && order.totalAmount !== oldTotalAmount) {
+      // Items changed on a delivered order without status change — adjust the difference
+      balanceAdjustment += order.totalAmount - oldTotalAmount;
     }
 
-    await order.save();
-
-    // Apply balance adjustment if status changed
-    if (balanceAdjustment !== 0) {
-        await User.findByIdAndUpdate(order.userId, {
-            $inc: { accountBalance: balanceAdjustment }
+    // Stock adjustments on status transitions
+    if (statusChanged) {
+      // Restore stock when transitioning TO cancelled
+      if (orderStatus === "cancelled" && oldStatus !== "cancelled") {
+        const stockRestorations = order.items.map((item) => {
+          if (item.variantId) {
+            return {
+              updateOne: {
+                filter: { _id: item.productId, "variants._id": item.variantId },
+                update: { $inc: { "variants.$.stock": item.quantity } },
+              },
+            };
+          }
+          return {
+            updateOne: {
+              filter: { _id: item.productId },
+              update: { $inc: { stock: item.quantity } },
+            },
+          };
         });
+        await Product.bulkWrite(stockRestorations);
+      }
+      // Re-decrement stock when transitioning FROM cancelled
+      if (oldStatus === "cancelled" && orderStatus !== "cancelled") {
+        const stockDecrements = order.items.map((item) => {
+          if (item.variantId) {
+            return {
+              updateOne: {
+                filter: { _id: item.productId, "variants._id": item.variantId },
+                update: { $inc: { "variants.$.stock": -item.quantity } },
+              },
+            };
+          }
+          return {
+            updateOne: {
+              filter: { _id: item.productId },
+              update: { $inc: { stock: -item.quantity } },
+            },
+          };
+        });
+        await Product.bulkWrite(stockDecrements);
+      }
+    }
+
+    // Use transaction for save + balance update
+    if (balanceAdjustment !== 0) {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await order.save({ session });
+          await User.findByIdAndUpdate(order.userId, {
+            $inc: { accountBalance: balanceAdjustment }
+          }, { session });
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await order.save();
     }
 
     res.status(200).json({
@@ -170,7 +228,44 @@ export const createOrderAdmin = async (req, res) => {
       areaId,
     });
 
-    await newOrder.save();
+    // Decrement stock for each product
+    const stockUpdates = orderItems.map((item) => {
+      if (item.variantId) {
+        return {
+          updateOne: {
+            filter: { _id: item.productId, "variants._id": item.variantId },
+            update: { $inc: { "variants.$.stock": -item.quantity } },
+          },
+        };
+      }
+      return {
+        updateOne: {
+          filter: { _id: item.productId },
+          update: { $inc: { stock: -item.quantity } },
+        },
+      };
+    });
+
+    // If created as delivered, save order + update balance atomically
+    if (newOrder.orderStatus === "delivered") {
+      if (!newOrder.deliveredAt) newOrder.deliveredAt = Date.now();
+      if (newOrder.paymentMethod === "COD") newOrder.paymentStatus = "paid";
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await newOrder.save({ session });
+          await User.findByIdAndUpdate(userId, {
+            $inc: { accountBalance: totalAmount }
+          }, { session });
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await newOrder.save();
+    }
+
+    await Product.bulkWrite(stockUpdates);
 
     res.status(201).json({
       message: "Order created successfully by admin",
@@ -339,6 +434,25 @@ export const cancelOrder = async (req, res) => {
         order.cancelledAt = Date.now();
         await order.save();
 
+        // Restore stock
+        const stockRestorations = order.items.map((item) => {
+            if (item.variantId) {
+                return {
+                    updateOne: {
+                        filter: { _id: item.productId, "variants._id": item.variantId },
+                        update: { $inc: { "variants.$.stock": item.quantity } },
+                    },
+                };
+            }
+            return {
+                updateOne: {
+                    filter: { _id: item.productId },
+                    update: { $inc: { stock: item.quantity } },
+                },
+            };
+        });
+        await Product.bulkWrite(stockRestorations);
+
         res.status(200).json({ message: 'Order cancelled successfully' })
     } catch (error) {
         console.error("Cancel Order Error:", error);
@@ -473,11 +587,12 @@ export const updateOrderStatus = async (req, res) => {
         }
 
         let balanceAdjustment = 0;
-        if (status !== order.orderStatus) {
-            if (order.orderStatus === "delivered") {
+        const oldStatus = order.orderStatus;
+        if (status !== oldStatus) {
+            if (oldStatus === "delivered") {
                 balanceAdjustment -= order.totalAmount;
             }
-            
+
             order.orderStatus = status;
 
             if (status === 'delivered') {
@@ -488,6 +603,48 @@ export const updateOrderStatus = async (req, res) => {
                 }
             } else if (status === 'cancelled') {
                 order.cancelledAt = Date.now();
+            }
+
+            // Restore stock when transitioning TO cancelled
+            if (status === "cancelled" && oldStatus !== "cancelled") {
+                const stockRestorations = order.items.map((item) => {
+                    if (item.variantId) {
+                        return {
+                            updateOne: {
+                                filter: { _id: item.productId, "variants._id": item.variantId },
+                                update: { $inc: { "variants.$.stock": item.quantity } },
+                            },
+                        };
+                    }
+                    return {
+                        updateOne: {
+                            filter: { _id: item.productId },
+                            update: { $inc: { stock: item.quantity } },
+                        },
+                    };
+                });
+                await Product.bulkWrite(stockRestorations);
+            }
+
+            // Re-decrement stock when transitioning FROM cancelled
+            if (oldStatus === "cancelled" && status !== "cancelled") {
+                const stockDecrements = order.items.map((item) => {
+                    if (item.variantId) {
+                        return {
+                            updateOne: {
+                                filter: { _id: item.productId, "variants._id": item.variantId },
+                                update: { $inc: { "variants.$.stock": -item.quantity } },
+                            },
+                        };
+                    }
+                    return {
+                        updateOne: {
+                            filter: { _id: item.productId },
+                            update: { $inc: { stock: -item.quantity } },
+                        },
+                    };
+                });
+                await Product.bulkWrite(stockDecrements);
             }
         }
 
