@@ -4,6 +4,7 @@ import Order from "../models/order.model.js";
 import Area from "../models/area.model.js";
 import Product from "../models/product.model.js";
 import User from "../models/user.model.js";
+import Subscription from "../models/subscription.model.js";
 
 export const updateOrderAdmin = async (req, res) => {
   try {
@@ -31,6 +32,8 @@ export const updateOrderAdmin = async (req, res) => {
         items.map(async (item) => {
           const product = await Product.findById(item.productId);
           if (!product) throw new Error(`Product ${item.productId} not found`);
+          const parsedQty = Number.parseInt(item.quantity, 10);
+          if (!Number.isInteger(parsedQty) || parsedQty < 1) throw new Error(`Invalid quantity for product ${item.productId}`);
 
           let effectivePrice = product.price;
           let variantId = null;
@@ -55,7 +58,7 @@ export const updateOrderAdmin = async (req, res) => {
             price: effectivePrice,
             originalPrice,
             image: product.image,
-            quantity: item.quantity,
+            quantity: parsedQty,
             variantId,
             variantLabel,
             unit,
@@ -91,65 +94,45 @@ export const updateOrderAdmin = async (req, res) => {
       balanceAdjustment += order.totalAmount - oldTotalAmount;
     }
 
-    // Stock adjustments on status transitions
+    // Build stock ops for status transitions
+    let stockOps = null;
     if (statusChanged) {
-      // Restore stock when transitioning TO cancelled
       if (orderStatus === "cancelled" && oldStatus !== "cancelled") {
-        const stockRestorations = order.items.map((item) => {
+        stockOps = order.items.map((item) => {
           if (item.variantId) {
-            return {
-              updateOne: {
-                filter: { _id: item.productId, "variants._id": item.variantId },
-                update: { $inc: { "variants.$.stock": item.quantity } },
-              },
-            };
+            return { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": item.quantity } } } };
           }
-          return {
-            updateOne: {
-              filter: { _id: item.productId },
-              update: { $inc: { stock: item.quantity } },
-            },
-          };
+          return { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: item.quantity } } } };
         });
-        await Product.bulkWrite(stockRestorations);
-      }
-      // Re-decrement stock when transitioning FROM cancelled
-      if (oldStatus === "cancelled" && orderStatus !== "cancelled") {
-        const stockDecrements = order.items.map((item) => {
+      } else if (oldStatus === "cancelled" && orderStatus !== "cancelled") {
+        stockOps = order.items.map((item) => {
           if (item.variantId) {
-            return {
-              updateOne: {
-                filter: { _id: item.productId, "variants._id": item.variantId },
-                update: { $inc: { "variants.$.stock": -item.quantity } },
-              },
-            };
+            return { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": -item.quantity } } } };
           }
-          return {
-            updateOne: {
-              filter: { _id: item.productId },
-              update: { $inc: { stock: -item.quantity } },
-            },
-          };
+          return { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: -item.quantity } } } };
         });
-        await Product.bulkWrite(stockDecrements);
       }
     }
 
-    // Use transaction for save + balance update
-    if (balanceAdjustment !== 0) {
-      const session = await mongoose.startSession();
-      try {
-        await session.withTransaction(async () => {
-          await order.save({ session });
+    // Transaction: save + stock + balance — all atomic
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await order.save({ session });
+        if (stockOps) await Product.bulkWrite(stockOps, { session });
+        if (balanceAdjustment !== 0) {
           await User.findByIdAndUpdate(order.userId, {
             $inc: { accountBalance: balanceAdjustment }
           }, { session });
-        });
-      } finally {
-        await session.endSession();
-      }
-    } else {
-      await order.save();
+          if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
+            await Subscription.findByIdAndUpdate(order.linkedSubscriptionId, {
+              $inc: { pendingAmount: balanceAdjustment }
+            }, { session });
+          }
+        }
+      });
+    } finally {
+      await session.endSession();
     }
 
     res.status(200).json({
@@ -169,6 +152,13 @@ export const createOrderAdmin = async (req, res) => {
 
     if (!userId || !items || items.length === 0 || !address) {
       return res.status(400).json({ message: "User, items, and address are required" });
+    }
+
+    for (const item of items) {
+      const qty = Number.parseInt(item.quantity, 10);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ message: "Each item must have a valid quantity (positive integer)." });
+      }
     }
 
     const orderItems = await Promise.all(
@@ -199,7 +189,7 @@ export const createOrderAdmin = async (req, res) => {
           price: effectivePrice,
           originalPrice,
           image: product.image,
-          quantity: item.quantity,
+          quantity: Number.parseInt(item.quantity, 10),
           variantId,
           variantLabel,
           unit,
@@ -228,7 +218,7 @@ export const createOrderAdmin = async (req, res) => {
       areaId,
     });
 
-    // Decrement stock for each product
+    // Build stock decrement ops
     const stockUpdates = orderItems.map((item) => {
       if (item.variantId) {
         return {
@@ -246,7 +236,7 @@ export const createOrderAdmin = async (req, res) => {
       };
     });
 
-    // If created as delivered, save order + update balance atomically
+    // If created as delivered, save order + update balance + stock atomically
     if (newOrder.orderStatus === "delivered") {
       if (!newOrder.deliveredAt) newOrder.deliveredAt = Date.now();
       if (newOrder.paymentMethod === "COD") newOrder.paymentStatus = "paid";
@@ -254,6 +244,7 @@ export const createOrderAdmin = async (req, res) => {
       try {
         await session.withTransaction(async () => {
           await newOrder.save({ session });
+          await Product.bulkWrite(stockUpdates, { session });
           await User.findByIdAndUpdate(userId, {
             $inc: { accountBalance: totalAmount }
           }, { session });
@@ -262,10 +253,16 @@ export const createOrderAdmin = async (req, res) => {
         await session.endSession();
       }
     } else {
-      await newOrder.save();
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await newOrder.save({ session });
+          await Product.bulkWrite(stockUpdates, { session });
+        });
+      } finally {
+        await session.endSession();
+      }
     }
-
-    await Product.bulkWrite(stockUpdates);
 
     res.status(201).json({
       message: "Order created successfully by admin",
@@ -348,9 +345,7 @@ export const createOrder = async (req, res) => {
             areaId,
         })
 
-        await newOrder.save();
-
-        // 3️⃣ Decrement stock for each product
+        // Decrement stock for each product
         const stockUpdates = orderItems.map((item) => {
             if (item.variantId) {
                 return {
@@ -367,9 +362,17 @@ export const createOrder = async (req, res) => {
                 },
             };
         });
-        await Product.bulkWrite(stockUpdates);
 
-        await Cart.findOneAndUpdate({ userId }, { items: [] })
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                await newOrder.save({ session });
+                await Product.bulkWrite(stockUpdates, { session });
+                await Cart.findOneAndUpdate({ userId }, { items: [] }, { session });
+            });
+        } finally {
+            await session.endSession();
+        }
 
         res.status(201).json({
             message: 'Order created successfully',
@@ -432,9 +435,7 @@ export const cancelOrder = async (req, res) => {
 
         order.orderStatus = 'cancelled'
         order.cancelledAt = Date.now();
-        await order.save();
 
-        // Restore stock
         const stockRestorations = order.items.map((item) => {
             if (item.variantId) {
                 return {
@@ -451,7 +452,16 @@ export const cancelOrder = async (req, res) => {
                 },
             };
         });
-        await Product.bulkWrite(stockRestorations);
+
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                await order.save({ session });
+                await Product.bulkWrite(stockRestorations, { session });
+            });
+        } finally {
+            await session.endSession();
+        }
 
         res.status(200).json({ message: 'Order cancelled successfully' })
     } catch (error) {
@@ -492,7 +502,7 @@ export const getAllOrder = async (req, res) => {
 export const recordOrderDeliveryOutcome = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, reason, notes, deliveryDate } = req.body;
+    const { status, reason, notes, deliveryDate, paymentMode = "pay_at_delivery", subscriptionId } = req.body;
 
     if (!["delivered", "failed"].includes(status)) {
       return res.status(400).json({ message: "Status must be 'delivered' or 'failed'." });
@@ -514,9 +524,6 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
     if (status === "delivered") {
       order.orderStatus = "delivered";
       order.deliveredAt = Date.now();
-      if (order.paymentMethod === "COD") {
-        order.paymentStatus = "paid";
-      }
       order.deliveryAttempts.push({
         attemptDate: deliveryDate ? new Date(deliveryDate) : new Date(),
         status: "delivered",
@@ -524,6 +531,46 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
         notes: notes || null,
         handledBy: req.user?._id || null,
       });
+
+      // Pre-transaction validation for subscription_ledger
+      if (paymentMode === "subscription_ledger") {
+        if (!subscriptionId) {
+          return res.status(400).json({ message: "subscriptionId is required for subscription_ledger payment mode." });
+        }
+        const subscription = await Subscription.findById(subscriptionId);
+        if (!subscription) {
+          return res.status(404).json({ message: "Subscription not found." });
+        }
+        if (subscription.status !== "active") {
+          return res.status(409).json({ message: "Subscription is no longer active." });
+        }
+        if (subscription.userId.toString() !== order.userId.toString()) {
+          return res.status(403).json({ message: "Subscription does not belong to this customer." });
+        }
+      }
+
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          if (paymentMode === "subscription_ledger") {
+            order.paymentStatus = "pending";
+            order.paymentMode = "subscription_ledger";
+            order.linkedSubscriptionId = subscriptionId;
+            await order.save({ session });
+            await User.findByIdAndUpdate(order.userId, { $inc: { accountBalance: order.totalAmount } }, { session });
+            await Subscription.findByIdAndUpdate(subscriptionId, { $inc: { pendingAmount: order.totalAmount } }, { session });
+          } else {
+            if (order.paymentMethod === "COD") {
+              order.paymentStatus = "paid";
+            }
+            order.paymentMode = "pay_at_delivery";
+            await order.save({ session });
+            await User.findByIdAndUpdate(order.userId, { $inc: { accountBalance: order.totalAmount } }, { session });
+          }
+        });
+      } finally {
+        await session.endSession();
+      }
     } else {
       order.deliveryAttempts.push({
         attemptDate: deliveryDate ? new Date(deliveryDate) : new Date(),
@@ -532,21 +579,6 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
         notes: notes || null,
         handledBy: req.user?._id || null,
       });
-    }
-
-    if (status === "delivered") {
-      const session = await mongoose.startSession();
-      try {
-        await session.withTransaction(async () => {
-          await order.save({ session });
-          await User.findByIdAndUpdate(order.userId, {
-            $inc: { accountBalance: order.totalAmount }
-          }, { session });
-        });
-      } finally {
-        await session.endSession();
-      }
-    } else {
       await order.save();
     }
 
@@ -562,20 +594,16 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
 
 export const updateOrderStatus = async (req, res) => {
     try {
-        const { id } = req.params
-        const { status } = req.body;
+        const { id } = req.params;
+        const { status, paymentMode = "pay_at_delivery", subscriptionId } = req.body;
         const role = req.user?.role;
 
-        const order = await Order.findById(id)
+        const order = await Order.findById(id);
 
         if (!order)
             return res.status(404).json({ message: 'Order not found' });
 
-        const validStatuses = [
-            "confirmed",
-            "delivered",
-            "cancelled",
-        ]
+        const validStatuses = ["confirmed", "delivered", "cancelled"];
 
         if (!validStatuses.includes(status))
             return res.status(400).json({ message: 'Invalid order status' });
@@ -586,89 +614,96 @@ export const updateOrderStatus = async (req, res) => {
             });
         }
 
-        let balanceAdjustment = 0;
         const oldStatus = order.orderStatus;
-        if (status !== oldStatus) {
-            if (oldStatus === "delivered") {
-                balanceAdjustment -= order.totalAmount;
-            }
+        if (status === oldStatus) {
+            return res.status(200).json({ message: 'Order status updated successfully', order, adjustment: 0 });
+        }
 
-            order.orderStatus = status;
+        let balanceAdjustment = 0;
+        if (oldStatus === "delivered") {
+            balanceAdjustment -= order.totalAmount;
+            // Clear payment mode fields when reverting a delivered order
+            order.paymentMode = "pay_at_delivery";
+            order.linkedSubscriptionId = null;
+            order.deliveredAt = null;
+        }
 
-            if (status === 'delivered') {
-                balanceAdjustment += order.totalAmount;
-                order.deliveredAt = Date.now();
+        order.orderStatus = status;
+
+        if (status === 'delivered') {
+            balanceAdjustment += order.totalAmount;
+            order.deliveredAt = Date.now();
+
+            if (paymentMode === "subscription_ledger") {
+                if (!subscriptionId) {
+                    return res.status(400).json({ message: "subscriptionId is required for subscription_ledger payment mode." });
+                }
+                const subscription = await Subscription.findById(subscriptionId);
+                if (!subscription) {
+                    return res.status(404).json({ message: "Subscription not found." });
+                }
+                if (subscription.status !== "active") {
+                    return res.status(409).json({ message: "Subscription is no longer active." });
+                }
+                if (subscription.userId.toString() !== order.userId.toString()) {
+                    return res.status(403).json({ message: "Subscription does not belong to this customer." });
+                }
+                order.paymentStatus = "pending";
+                order.paymentMode = "subscription_ledger";
+                order.linkedSubscriptionId = subscriptionId;
+            } else {
                 if (order.paymentMethod === 'COD') {
                     order.paymentStatus = 'paid';
                 }
-            } else if (status === 'cancelled') {
-                order.cancelledAt = Date.now();
+                order.paymentMode = "pay_at_delivery";
             }
-
-            // Restore stock when transitioning TO cancelled
-            if (status === "cancelled" && oldStatus !== "cancelled") {
-                const stockRestorations = order.items.map((item) => {
-                    if (item.variantId) {
-                        return {
-                            updateOne: {
-                                filter: { _id: item.productId, "variants._id": item.variantId },
-                                update: { $inc: { "variants.$.stock": item.quantity } },
-                            },
-                        };
-                    }
-                    return {
-                        updateOne: {
-                            filter: { _id: item.productId },
-                            update: { $inc: { stock: item.quantity } },
-                        },
-                    };
-                });
-                await Product.bulkWrite(stockRestorations);
-            }
-
-            // Re-decrement stock when transitioning FROM cancelled
-            if (oldStatus === "cancelled" && status !== "cancelled") {
-                const stockDecrements = order.items.map((item) => {
-                    if (item.variantId) {
-                        return {
-                            updateOne: {
-                                filter: { _id: item.productId, "variants._id": item.variantId },
-                                update: { $inc: { "variants.$.stock": -item.quantity } },
-                            },
-                        };
-                    }
-                    return {
-                        updateOne: {
-                            filter: { _id: item.productId },
-                            update: { $inc: { stock: -item.quantity } },
-                        },
-                    };
-                });
-                await Product.bulkWrite(stockDecrements);
-            }
+        } else if (status === 'cancelled') {
+            order.cancelledAt = Date.now();
         }
 
-        if (balanceAdjustment !== 0) {
-            const session = await mongoose.startSession();
-            try {
-              await session.withTransaction(async () => {
+        // Build stock ops
+        let stockOps = null;
+        if (status === "cancelled" && oldStatus !== "cancelled") {
+            stockOps = order.items.map((item) => {
+                if (item.variantId) {
+                    return { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": item.quantity } } } };
+                }
+                return { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: item.quantity } } } };
+            });
+        } else if (oldStatus === "cancelled" && status !== "cancelled") {
+            stockOps = order.items.map((item) => {
+                if (item.variantId) {
+                    return { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": -item.quantity } } } };
+                }
+                return { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: -item.quantity } } } };
+            });
+        }
+
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
                 await order.save({ session });
-                await User.findByIdAndUpdate(order.userId, {
-                  $inc: { accountBalance: balanceAdjustment }
-                }, { session });
-              });
-            } finally {
-              await session.endSession();
-            }
-        } else {
-            await order.save();
+                if (stockOps) await Product.bulkWrite(stockOps, { session });
+                if (balanceAdjustment !== 0) {
+                    await User.findByIdAndUpdate(order.userId, {
+                        $inc: { accountBalance: balanceAdjustment }
+                    }, { session });
+                    if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
+                        await Subscription.findByIdAndUpdate(order.linkedSubscriptionId, {
+                            $inc: { pendingAmount: balanceAdjustment }
+                        }, { session });
+                    }
+                }
+            });
+        } finally {
+            await session.endSession();
         }
 
         res.status(200).json({
             message: 'Order status updated successfully',
             order,
             adjustment: balanceAdjustment,
-        })
+        });
     } catch (error) {
         console.error("Update Order Status Error:", error);
         res.status(500).json({ message: "Failed to update order status" });

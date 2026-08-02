@@ -359,10 +359,30 @@ export const updateCollection = async (req, res) => {
     if (collection.status === "confirmed" && (actualQty !== undefined || ratePerLiter !== undefined)) {
       const oldAmount = collection.totalAmount || 0;
       updates.totalAmount = parseFloat((newQty * newRate).toFixed(2));
-      await Supplier.updateOne(
-        { _id: collection.supplierId },
-        { $inc: { supplyBalance: updates.totalAmount - oldAmount } }
-      );
+      const balanceDelta = updates.totalAmount - oldAmount;
+
+      const session = await mongoose.startSession();
+      try {
+        let updated;
+        await session.withTransaction(async () => {
+          updated = await MilkCollection.findByIdAndUpdate(
+            id,
+            { $set: updates },
+            { new: true, runValidators: true, session }
+          ).populate("supplierId", "name phone");
+
+          if (balanceDelta !== 0) {
+            await Supplier.updateOne(
+              { _id: collection.supplierId },
+              { $inc: { supplyBalance: balanceDelta } },
+              { session }
+            );
+          }
+        });
+        return res.status(200).json({ message: "Collection updated.", collection: updated });
+      } finally {
+        await session.endSession();
+      }
     }
 
     const updated = await MilkCollection.findByIdAndUpdate(
@@ -375,6 +395,35 @@ export const updateCollection = async (req, res) => {
   } catch (error) {
     console.error("Update Collection Error:", error);
     res.status(500).json({ message: "Failed to update collection." });
+  }
+};
+
+// Today's shift summary — returns confirmed qty + amount split by session
+export const getTodayShiftSummary = async (req, res) => {
+  try {
+    const today = toUTCMidnight(new Date());
+    const collections = await MilkCollection.find({ date: today }).lean();
+
+    const result = {
+      morning: { confirmed: 0, total: 0, qty: 0, amount: 0 },
+      evening: { confirmed: 0, total: 0, qty: 0, amount: 0 },
+    };
+
+    for (const c of collections) {
+      const s = result[c.session];
+      if (!s) continue;
+      s.total++;
+      if (c.status === "confirmed") {
+        s.confirmed++;
+        s.qty += c.actualQty || 0;
+        s.amount += c.totalAmount || 0;
+      }
+    }
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Get Today Shift Summary Error:", error);
+    res.status(500).json({ message: "Failed to fetch shift summary." });
   }
 };
 

@@ -39,6 +39,7 @@ export const getCustomerPassbook = async (req, res) => {
       $or: [{ orderStatus: "delivered" }, { deliveredAt: { $ne: null } }]
     }).lean();
     const orderEntries = orders.map(order => {
+      const paymentLabel = order.paymentMode === "subscription_ledger" ? "On Subscription Ledger" : "Pay at Delivery";
       const entry = {
         date: order.deliveredAt || order.createdAt,
         type: "debit",
@@ -46,7 +47,10 @@ export const getCustomerPassbook = async (req, res) => {
         description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
         notes: order.items.map(i => `${i.name} x${i.quantity}`).join(", "),
         referenceId: order._id,
-        category: "Order"
+        category: "Order",
+        paymentMode: order.paymentMode || "pay_at_delivery",
+        paymentLabel,
+        linkedSubscriptionId: order.linkedSubscriptionId || null,
       };
       // If order was delivered then status changed (cancelled/reverted), add a credit entry for the reversal
       if (order.deliveredAt && order.orderStatus !== "delivered") {

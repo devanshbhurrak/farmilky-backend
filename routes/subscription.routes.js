@@ -26,6 +26,7 @@ import {
   unskipDeliveryDate,
   bulkPauseSubscriptions,
   bulkResumeSubscriptions,
+  getActiveSubscriptionsByUser,
 } from '../controllers/subscription.controller.js';
 
 const router = express.Router();
@@ -33,6 +34,7 @@ const router = express.Router();
 router.get('/admin/all', authMiddleware, adminOnly, getAllSubscriptions);
 router.get('/admin/today-supply', authMiddleware, adminOnly, getTodaySupply);
 router.get('/admin/delivery-board', authMiddleware, deliveryPartnerOrAdmin, getDeliveryBoard);
+router.get('/admin/user/:userId/active', authMiddleware, deliveryPartnerOrAdmin, getActiveSubscriptionsByUser);
 router.post('/admin/:id/delivery-outcome', authMiddleware, deliveryPartnerOrAdmin, recordSubscriptionDeliveryOutcome);
 router.post('/admin/:id/mark-delivered', authMiddleware, deliveryPartnerOrAdmin, markSubscriptionDeliveredToday);
 router.get('/admin/:id', authMiddleware, adminOnly, getSubscriptionByIdAdmin);

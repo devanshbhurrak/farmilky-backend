@@ -464,6 +464,7 @@ export const getDeliveryBoard = async (req, res) => {
                 return {
                     id: String(subscription._id),
                     type: "subscription",
+                    userId: subscription.userId?._id ? String(subscription.userId._id) : null,
                     customerName: subscription.userId?.name || "Unknown Customer",
                     phone: subscription.userId?.phone || "",
                     email: subscription.userId?.email || "",
@@ -498,6 +499,7 @@ export const getDeliveryBoard = async (req, res) => {
             return {
                 id: String(order._id),
                 type: "order",
+                userId: order.userId?._id ? String(order.userId._id) : null,
                 customerName: order.userId?.name || "Unknown Customer",
                 phone: order.userId?.phone || "",
                 email: order.userId?.email || "",
@@ -650,39 +652,51 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
         // Handle Correction: Subtract old amount, add new amount
         const oldEntry = subscription.deliveryHistory[existingEntryIndex];
         balanceAdjustment = finalTotalAmount - (oldEntry.totalAmount || 0);
-        
         subscription.deliveryHistory[existingEntryIndex] = deliveryEntry;
-        subscription.pendingAmount += balanceAdjustment;
     } else {
         // New Entry
         if (!isSubscriptionDueOnDate(subscription, targetDate)) {
             return res.status(400).json({ message: "This subscription is not due for delivery on this date." });
         }
         subscription.deliveryHistory.push(deliveryEntry);
-        subscription.pendingAmount += finalTotalAmount;
         subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate);
     }
 
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
-        await subscription.save({ session });
+        // Use $inc for pendingAmount to avoid lost-update race condition
+        if (existingEntryIndex !== -1) {
+          await Subscription.findByIdAndUpdate(subscription._id, {
+            $set: { [`deliveryHistory.${existingEntryIndex}`]: deliveryEntry },
+            $inc: { pendingAmount: balanceAdjustment },
+          }, { session });
+        } else {
+          await Subscription.findByIdAndUpdate(subscription._id, {
+            $push: { deliveryHistory: deliveryEntry },
+            $set: { nextDeliveryDate: subscription.nextDeliveryDate },
+            $inc: { pendingAmount: finalTotalAmount },
+          }, { session });
+        }
         if (balanceAdjustment !== 0) {
-          await User.findByIdAndUpdate(subscription.userId, {
+          await User.findByIdAndUpdate(subscription.userId._id || subscription.userId, {
             $inc: { accountBalance: balanceAdjustment }
           }, { session });
         }
       });
+      // Refresh subscription from DB so response has accurate pendingAmount
+      const updated = await Subscription.findById(subscription._id)
+        .populate("userId", "name email phone")
+        .populate("productId", "name unit image price category");
+      return res.status(200).json({
+        message: existingEntryIndex !== -1 ? "Delivery outcome updated." : `Delivery outcome recorded as ${status}.`,
+        subscription: updated,
+        adjustment: balanceAdjustment,
+        pendingAmount: updated.pendingAmount,
+      });
     } finally {
       await session.endSession();
     }
-
-    return res.status(200).json({
-      message: existingEntryIndex !== -1 ? "Delivery outcome updated." : `Delivery outcome recorded as ${status}.`,
-      subscription,
-      adjustment: balanceAdjustment,
-      pendingAmount: subscription.pendingAmount,
-    });
   } catch (error) {
     console.error("Record Subscription Delivery Outcome Error:", error);
     return res.status(500).json({ message: "Failed to record delivery outcome." });
@@ -725,7 +739,7 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
         const entryPricePerUnit = parseFloat((subscription.totalPricePerDay / subscription.quantityPerDay).toFixed(2));
         const entryTotalAmount = subscription.totalPricePerDay; // Use exact daily total to avoid rounding drift
         const deliveryEntry = {
-            deliveryDate: new Date(),
+            deliveryDate: today,
             status: "delivered",
             scheduledQuantity: subscription.quantityPerDay,
             actualQuantity: subscription.quantityPerDay,
@@ -733,14 +747,16 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
             totalAmount: entryTotalAmount,
         };
 
-        subscription.deliveryHistory.push(deliveryEntry);
-        subscription.pendingAmount += entryTotalAmount;
-        subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, today);
+        const nextDeliveryDate = calculateNextDeliveryDate(subscription, today);
 
         const session = await mongoose.startSession();
         try {
           await session.withTransaction(async () => {
-            await subscription.save({ session });
+            await Subscription.findByIdAndUpdate(subscription._id, {
+              $push: { deliveryHistory: deliveryEntry },
+              $set: { nextDeliveryDate },
+              $inc: { pendingAmount: entryTotalAmount },
+            }, { session });
             await User.findByIdAndUpdate(subscription.userId, {
               $inc: { accountBalance: entryTotalAmount }
             }, { session });
@@ -749,11 +765,15 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
           await session.endSession();
         }
 
+        const updated = await Subscription.findById(subscription._id)
+            .populate("userId", "name email phone")
+            .populate("productId", "name unit image price category");
+
         return res.status(200).json({
             message: "Subscription delivery marked for today.",
-            subscription,
+            subscription: updated,
             addedAmount: deliveryEntry.totalAmount,
-            pendingAmount: subscription.pendingAmount,
+            pendingAmount: updated.pendingAmount,
         });
     } catch (error) {
         console.error("Mark Subscription Delivered Error:", error);
@@ -1073,5 +1093,28 @@ export const bulkResumeSubscriptions = async (req, res) => {
   } catch (error) {
     console.error("Bulk Resume Error:", error);
     res.status(500).json({ message: "Failed to bulk resume subscriptions" });
+  }
+};
+
+export const getActiveSubscriptionsByUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid userId." });
+    }
+    const subs = await Subscription.find({ userId, status: "active" })
+      .populate("productId", "name unit");
+    const subscriptions = subs.map((sub) => ({
+      _id: sub._id,
+      productName: sub.productId?.name || "Unknown",
+      unit: sub.productId?.unit || "",
+      totalPricePerDay: sub.totalPricePerDay,
+      pendingAmount: sub.pendingAmount || 0,
+      deliverySchedule: sub.deliverySchedule,
+    }));
+    return res.status(200).json({ subscriptions });
+  } catch (err) {
+    console.error("Get Active Subscriptions By User Error:", err);
+    return res.status(500).json({ message: "Failed to fetch subscriptions." });
   }
 };

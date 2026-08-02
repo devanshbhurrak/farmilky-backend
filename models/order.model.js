@@ -91,6 +91,16 @@ const orderSchema = new mongoose.Schema({
         required: true,
         default: "COD"
     },
+    paymentMode: {
+        type: String,
+        enum: ["pay_at_delivery", "subscription_ledger"],
+        default: "pay_at_delivery",
+    },
+    linkedSubscriptionId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Subscription",
+        default: null,
+    },
     deliveredAt: {
         type: Date,
     },

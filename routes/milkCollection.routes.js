@@ -9,6 +9,7 @@ import {
   getCollectionHistory,
   updateCollection,
   getMissingCollections,
+  getTodayShiftSummary,
 } from "../controllers/milkCollection.controller.js";
 
 const router = Router();
@@ -16,6 +17,7 @@ const router = Router();
 router.use(authMiddleware, adminOnly);
 
 // Daily confirmation workflow
+router.get("/today-shift", getTodayShiftSummary);
 router.get("/daily", getDailyConfirmation);
 router.post("/generate", generateDailyCollections);
 router.post("/bulk-confirm", bulkConfirmDay);

@@ -211,7 +211,7 @@ export const getMyManifestHistory = async (req, res) => {
 export const updateManifestEntry = async (req, res) => {
   try {
     const { id, entryId } = req.params;
-    const { status, deliveryNotes, failureReason, proofOfDelivery } = req.body;
+    const { status, deliveryNotes, failureReason, proofOfDelivery, paymentMode = "pay_at_delivery", subscriptionId } = req.body;
     const agentId = req.user._id;
 
     const manifest = await DeliveryManifest.findOne({ _id: id, agentId });
@@ -228,45 +228,49 @@ export const updateManifestEntry = async (req, res) => {
     if (deliveryNotes !== undefined) entry.deliveryNotes = deliveryNotes;
     if (failureReason !== undefined) entry.failureReason = failureReason;
     if (proofOfDelivery !== undefined) entry.proofOfDelivery = proofOfDelivery;
-    
+
     if (status === "delivered") {
         entry.deliveredAt = new Date();
-
-        // --- VIRTUAL PASSBOOK INTEGRATION ---
 
         if (entry.type === "subscription") {
             const sub = await Subscription.findById(entry.referenceId);
             if (sub) {
-                // Idempotency: check if delivery already recorded for this date
                 const manifestDate = normalizeDate(manifest.date);
-                const alreadyRecorded = sub.deliveryHistory.some((h) => {
+
+                // Pre-transaction validation: check for duplicate inside a fresh read
+                // to minimize (but not eliminate) the race window
+                const freshSub = await Subscription.findById(sub._id).select("deliveryHistory pendingAmount totalPricePerDay quantityPerDay nextDeliveryDate userId status");
+                const alreadyRecorded = freshSub.deliveryHistory.some((h) => {
                     const d = h.deliveryDate || h.date;
                     return d && normalizeDate(d).getTime() === manifestDate.getTime();
                 });
 
                 if (!alreadyRecorded) {
-                    const pricePerUnit = parseFloat((sub.totalPricePerDay / sub.quantityPerDay).toFixed(2));
-                    const totalAmount = sub.totalPricePerDay; // Use exact daily total to avoid rounding drift
+                    const pricePerUnit = parseFloat((freshSub.totalPricePerDay / freshSub.quantityPerDay).toFixed(2));
+                    const totalAmount = freshSub.totalPricePerDay;
                     const deliveryEntry = {
                         deliveryDate: manifest.date,
                         status: "delivered",
-                        scheduledQuantity: sub.quantityPerDay,
-                        actualQuantity: sub.quantityPerDay,
+                        scheduledQuantity: freshSub.quantityPerDay,
+                        actualQuantity: freshSub.quantityPerDay,
                         pricePerUnit,
                         totalAmount,
                         notes: deliveryNotes || "Delivered via Agent App",
                         handledBy: agentId,
                         handledAt: new Date(),
                     };
-                    sub.deliveryHistory.push(deliveryEntry);
-                    sub.pendingAmount += totalAmount;
-                    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, manifest.date);
+                    const nextDeliveryDate = calculateNextDeliveryDate(freshSub, manifest.date);
 
                     const subSession = await mongoose.startSession();
                     try {
                       await subSession.withTransaction(async () => {
-                        await sub.save({ session: subSession });
-                        await User.findByIdAndUpdate(sub.userId, {
+                        // Atomic: push delivery entry + $inc pendingAmount atomically
+                        await Subscription.findByIdAndUpdate(freshSub._id, {
+                          $push: { deliveryHistory: deliveryEntry },
+                          $set: { nextDeliveryDate },
+                          $inc: { pendingAmount: totalAmount },
+                        }, { session: subSession });
+                        await User.findByIdAndUpdate(freshSub.userId, {
                           $inc: { accountBalance: totalAmount }
                         }, { session: subSession });
                       });
@@ -280,7 +284,6 @@ export const updateManifestEntry = async (req, res) => {
             if (order && order.orderStatus !== "delivered") {
                 order.orderStatus = "delivered";
                 order.deliveredAt = Date.now();
-                if (order.paymentMethod === "COD") order.paymentStatus = "paid";
 
                 order.deliveryAttempts.push({
                     attemptDate: new Date(),
@@ -289,6 +292,33 @@ export const updateManifestEntry = async (req, res) => {
                     handledBy: agentId,
                 });
 
+                // Validate subscription_ledger payment mode
+                if (paymentMode === "subscription_ledger") {
+                    if (!subscriptionId) {
+                        entry.status = "pending"; entry.deliveredAt = undefined;
+                        return res.status(400).json({ message: "subscriptionId is required for subscription_ledger payment mode." });
+                    }
+                    const linkedSub = await Subscription.findById(subscriptionId);
+                    if (!linkedSub) {
+                        entry.status = "pending"; entry.deliveredAt = undefined;
+                        return res.status(404).json({ message: "Subscription not found." });
+                    }
+                    if (linkedSub.status !== "active") {
+                        entry.status = "pending"; entry.deliveredAt = undefined;
+                        return res.status(409).json({ message: "Subscription is no longer active." });
+                    }
+                    if (linkedSub.userId.toString() !== order.userId.toString()) {
+                        entry.status = "pending"; entry.deliveredAt = undefined;
+                        return res.status(403).json({ message: "Subscription does not belong to this customer." });
+                    }
+                    order.paymentStatus = "pending";
+                    order.paymentMode = "subscription_ledger";
+                    order.linkedSubscriptionId = subscriptionId;
+                } else {
+                    if (order.paymentMethod === "COD") order.paymentStatus = "paid";
+                    order.paymentMode = "pay_at_delivery";
+                }
+
                 const orderSession = await mongoose.startSession();
                 try {
                   await orderSession.withTransaction(async () => {
@@ -296,6 +326,11 @@ export const updateManifestEntry = async (req, res) => {
                     await User.findByIdAndUpdate(order.userId, {
                       $inc: { accountBalance: order.totalAmount }
                     }, { session: orderSession });
+                    if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
+                      await Subscription.findByIdAndUpdate(order.linkedSubscriptionId, {
+                        $inc: { pendingAmount: order.totalAmount }
+                      }, { session: orderSession });
+                    }
                   });
                 } finally {
                   await orderSession.endSession();
@@ -304,7 +339,7 @@ export const updateManifestEntry = async (req, res) => {
         }
     }
 
-    // Recalculate summary
+    // Recalculate manifest summary
     const counts = manifest.entries.reduce(
       (acc, e) => {
         acc[e.status] = (acc[e.status] || 0) + 1;
@@ -321,7 +356,14 @@ export const updateManifestEntry = async (req, res) => {
 
     if (counts.pending === 0) manifest.status = "completed";
 
-    await manifest.save();
+    try {
+      await manifest.save();
+    } catch (saveErr) {
+      // The financial transaction (subscription/order) already committed.
+      // Log clearly so this partial state can be reconciled manually.
+      console.error("PARTIAL COMMIT — manifest.save() failed after financial transaction committed. Entry:", entryId, "Manifest:", id, saveErr);
+      return res.status(500).json({ message: "Delivery recorded but manifest status could not be updated. Please refresh." });
+    }
     res.status(200).json({ message: "Entry updated.", manifest });
   } catch (error) {
     console.error("Update Entry Error:", error);
