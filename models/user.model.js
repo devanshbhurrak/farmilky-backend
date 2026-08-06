@@ -43,8 +43,14 @@ const userSchema = new mongoose.Schema(
         state: { type: String },
         pincode: { type: Number },
         type: { type: String, enum: ["home", "work", "other"], default: "home" },
+        lat: { type: Number, default: null },
+        lng: { type: Number, default: null },
       },
     ],
+    deliverySequence: {
+      type: Number,
+      default: null,
+    },
     accountBalance: {
       type: Number,
       default: 0,
@@ -103,6 +109,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ phone: 1 }, { unique: true, sparse: true });
 userSchema.index({ role: 1, createdAt: -1 });
 userSchema.index({ "agentInfo.assignedArea": 1 });
+userSchema.index({ assignedArea: 1, role: 1 });
 
 const User = mongoose.model("User", userSchema);
 

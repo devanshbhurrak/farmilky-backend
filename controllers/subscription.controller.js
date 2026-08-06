@@ -4,7 +4,7 @@ import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
 import User from "../models/user.model.js";
 
-import { calculateNextDeliveryDate, isSubscriptionDueOnDate } from "../services/scheduler.js";
+import { calculateNextDeliveryDate, isSubscriptionDueOnDate, getHolidayDateSet } from "../services/scheduler.js";
 
 const normalizeDay = (value) => {
   const date = new Date(value);
@@ -74,10 +74,11 @@ export const createSubscriptionAdmin = async (req, res) => {
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const holidayDates = await getHolidayDateSet();
     const nextDeliveryDate =
       startDate.getTime() > today.getTime()
         ? startDate
-        : calculateNextDeliveryDate({ deliverySchedule, customDays }, startDate);
+        : calculateNextDeliveryDate({ deliverySchedule, customDays }, startDate, holidayDates);
 
     const subscription = new Subscription({
       userId,
@@ -172,10 +173,11 @@ export const createSubscription = async (req, res) => {
     // If start date is in the future, first delivery is ON that date
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const holidayDates = await getHolidayDateSet();
     const nextDeliveryDate =
       startDate.getTime() > today.getTime()
         ? startDate
-        : calculateNextDeliveryDate({ deliverySchedule, customDays }, startDate);
+        : calculateNextDeliveryDate({ deliverySchedule, customDays }, startDate, holidayDates);
 
     // 3️⃣ Create subscription
     const subscription = new Subscription({
@@ -355,12 +357,14 @@ export const getTodaySupply = async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
+        const holidayDates = await getHolidayDateSet();
+
         const subscriptions = await Subscription.find({ status: "active" })
             .populate("userId", "name email phone")
             .populate("productId", "name unit image price category");
 
         const dueSubscriptions = subscriptions.filter((subscription) =>
-            isSubscriptionDueOnDate(subscription, today)
+            isSubscriptionDueOnDate(subscription, today, holidayDates)
         );
 
         const supplies = dueSubscriptions.map((subscription) => ({
@@ -414,13 +418,30 @@ export const getTodaySupply = async (req, res) => {
 
 export const getDeliveryBoard = async (req, res) => {
     try {
-        const targetDate = req.query.date ? new Date(req.query.date) : new Date();
+        let targetDate = new Date();
+        if (req.query.date) {
+            const parsed = new Date(req.query.date);
+            if (isNaN(parsed.getTime())) {
+                return res.status(400).json({ message: "Invalid date format. Use YYYY-MM-DD." });
+            }
+            targetDate = parsed;
+        }
         targetDate.setHours(0, 0, 0, 0);
         const nextDate = new Date(targetDate);
         nextDate.setDate(nextDate.getDate() + 1);
 
+        const holidayDates = await getHolidayDateSet();
+
         const type = req.query.type || "all";
         const status = req.query.status || "all";
+
+        const areaFilter = req.query.area || "all";
+
+        const userPopulate = {
+            path: "userId",
+            select: "name email phone deliverySequence assignedArea addresses",
+            populate: { path: "assignedArea", select: "name" },
+        };
 
         const [subscriptions, relevantOrders] = await Promise.all([
             Subscription.find({
@@ -430,7 +451,7 @@ export const getDeliveryBoard = async (req, res) => {
                     { "deliveryHistory.date": { $gte: targetDate, $lt: nextDate } },
                 ],
             })
-                .populate("userId", "name email phone")
+                .populate(userPopulate)
                 .populate("productId", "name unit image price category"),
             Order.find({
                 $or: [
@@ -438,7 +459,7 @@ export const getDeliveryBoard = async (req, res) => {
                     { orderStatus: "delivered", deliveredAt: { $gte: targetDate, $lt: nextDate } },
                 ],
             })
-                .populate("userId", "name email phone")
+                .populate(userPopulate)
                 .sort({ createdAt: -1 }),
         ]);
 
@@ -450,7 +471,7 @@ export const getDeliveryBoard = async (req, res) => {
                     const d = normalizeDay(entryDate);
                     return d.getTime() === targetDate.getTime();
                 });
-                const dueToday = isSubscriptionDueOnDate(subscription, targetDate);
+                const dueToday = isSubscriptionDueOnDate(subscription, targetDate, holidayDates);
                 const normalizedOutcome = normalizeDeliveryOutcome(todayEntry, subscription);
 
                 if (!dueToday && !todayEntry) return null;
@@ -461,14 +482,22 @@ export const getDeliveryBoard = async (req, res) => {
                     ? `${productName} (${subscription.variantLabel})`
                     : productName;
 
+                const subUser = subscription.userId;
+                const subAreaId = subUser?.assignedArea ? String(subUser.assignedArea._id || subUser.assignedArea) : null;
+                const subAreaName = subUser?.assignedArea?.name || null;
+                const subDefaultAddr = subUser?.addresses?.find((a) => a.isDefault) || subUser?.addresses?.[0];
+                const subLat = (subDefaultAddr?.lat != null && isFinite(subDefaultAddr.lat)) ? subDefaultAddr.lat : null;
+                const subLng = (subDefaultAddr?.lng != null && isFinite(subDefaultAddr.lng)) ? subDefaultAddr.lng : null;
                 return {
                     id: String(subscription._id),
                     type: "subscription",
-                    userId: subscription.userId?._id ? String(subscription.userId._id) : null,
-                    customerName: subscription.userId?.name || "Unknown Customer",
-                    phone: subscription.userId?.phone || "",
-                    email: subscription.userId?.email || "",
+                    userId: subUser?._id ? String(subUser._id) : null,
+                    customerName: subUser?.name || "Unknown Customer",
+                    phone: subUser?.phone || "",
+                    email: subUser?.email || "",
                     address: null,
+                    lat: subLat,
+                    lng: subLng,
                     productLabel: label,
                     quantity: subscription.quantityPerDay,
                     unit: effectiveUnit,
@@ -481,6 +510,9 @@ export const getDeliveryBoard = async (req, res) => {
                     scheduledQuantity: subscription.quantityPerDay,
                     pendingAmount: subscription.pendingAmount || 0,
                     createdAt: subscription.createdAt,
+                    areaId: subAreaId,
+                    areaName: subAreaName,
+                    sequence: subUser?.deliverySequence ?? null,
                 };
             })
             .filter(Boolean);
@@ -496,16 +528,26 @@ export const getDeliveryBoard = async (req, res) => {
                 : latestAttemptToday?.status === "failed" ? "failed"
                 : "pending";
 
+            const orderUser = order.userId;
+            const orderAreaId = orderUser?.assignedArea
+                ? String(orderUser.assignedArea._id || orderUser.assignedArea)
+                : null;
+            const orderAreaName = orderUser?.assignedArea?.name || null;
+            const orderDefaultAddr = orderUser?.addresses?.find((a) => a.isDefault) || orderUser?.addresses?.[0];
+            const orderLat = (orderDefaultAddr?.lat != null && isFinite(orderDefaultAddr.lat)) ? orderDefaultAddr.lat : null;
+            const orderLng = (orderDefaultAddr?.lng != null && isFinite(orderDefaultAddr.lng)) ? orderDefaultAddr.lng : null;
             return {
                 id: String(order._id),
                 type: "order",
-                userId: order.userId?._id ? String(order.userId._id) : null,
-                customerName: order.userId?.name || "Unknown Customer",
-                phone: order.userId?.phone || "",
-                email: order.userId?.email || "",
+                userId: orderUser?._id ? String(orderUser._id) : null,
+                customerName: orderUser?.name || "Unknown Customer",
+                phone: orderUser?.phone || "",
+                email: orderUser?.email || "",
                 address: order.address
                     ? `${order.address.street}, ${order.address.city}, ${order.address.state} - ${order.address.pincode}`
                     : "Address not available",
+                lat: orderLat,
+                lng: orderLng,
                 productLabel: `${order.items.length} item(s)`,
                 quantity: order.items.reduce((sum, item) => sum + (item.quantity || 0), 0),
                 unit: "items",
@@ -518,6 +560,9 @@ export const getDeliveryBoard = async (req, res) => {
                 scheduledQuantity: order.items.reduce((s, i) => s + i.quantity, 0),
                 pendingAmount: order.paymentStatus === "pending" ? order.totalAmount || 0 : 0,
                 createdAt: order.createdAt,
+                areaId: orderAreaId,
+                areaName: orderAreaName,
+                sequence: orderUser?.deliverySequence ?? null,
             };
         });
 
@@ -529,18 +574,23 @@ export const getDeliveryBoard = async (req, res) => {
         if (status !== "all") {
             allDeliveries = allDeliveries.filter(d => d.deliveryStatus === status);
         }
+        if (areaFilter !== "all") {
+            allDeliveries = allDeliveries.filter(d => d.areaId === areaFilter);
+        }
 
         const subDeliveries = allDeliveries.filter(d => d.type === "subscription");
         const orderDeliveriesFiltered = allDeliveries.filter(d => d.type === "order");
 
         allDeliveries.sort((a, b) => {
+            // Pending/actionable first
             if (a.canRecordOutcome !== b.canRecordOutcome) {
                 return a.canRecordOutcome ? -1 : 1;
             }
-            if (a.type !== b.type) {
-                return a.type === "subscription" ? -1 : 1;
-            }
-            return a.customerName.localeCompare(b.customerName);
+            // Sort by sequence (nulls last), then by name
+            if (a.sequence == null && b.sequence == null) return (a.customerName || "").localeCompare(b.customerName || "");
+            if (a.sequence == null) return 1;
+            if (b.sequence == null) return -1;
+            return a.sequence - b.sequence;
         });
 
         res.status(200).json({
@@ -601,6 +651,8 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
     const targetDate = deliveryDate ? new Date(deliveryDate) : new Date();
     targetDate.setHours(0, 0, 0, 0);
 
+    const holidayDates = await getHolidayDateSet();
+
     // Check if an outcome for this date already exists to handle updates/corrections
     const existingEntryIndex = subscription.deliveryHistory.findIndex((entry) => {
       const entryDate = getDeliveryEntryDate(entry);
@@ -655,11 +707,11 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
         subscription.deliveryHistory[existingEntryIndex] = deliveryEntry;
     } else {
         // New Entry
-        if (!isSubscriptionDueOnDate(subscription, targetDate)) {
+        if (!isSubscriptionDueOnDate(subscription, targetDate, holidayDates)) {
             return res.status(400).json({ message: "This subscription is not due for delivery on this date." });
         }
         subscription.deliveryHistory.push(deliveryEntry);
-        subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate);
+        subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate, holidayDates);
     }
 
     const session = await mongoose.startSession();
@@ -721,7 +773,9 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        if (!isSubscriptionDueOnDate(subscription, today)) {
+        const holidayDates = await getHolidayDateSet();
+
+        if (!isSubscriptionDueOnDate(subscription, today, holidayDates)) {
             return res.status(400).json({ message: "This subscription is not due for delivery today." });
         }
 
@@ -747,7 +801,7 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
             totalAmount: entryTotalAmount,
         };
 
-        const nextDeliveryDate = calculateNextDeliveryDate(subscription, today);
+        const nextDeliveryDate = calculateNextDeliveryDate(subscription, today, holidayDates);
 
         const session = await mongoose.startSession();
         try {
@@ -829,7 +883,8 @@ export const updateSubscriptionAdmin = async (req, res) => {
     sub.totalPricePerDay = parseFloat((effectivePricePerUnit * sub.quantityPerDay).toFixed(2));
 
     // Recalculate next delivery date
-    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date());
+    const holidayDates = await getHolidayDateSet();
+    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date(), holidayDates);
 
     await sub.save();
     res.status(200).json({ message: "Subscription updated successfully by admin", subscription: sub });
@@ -857,7 +912,8 @@ export const updateSubscription = async (req, res) => {
       }
       sub.deliverySchedule = deliverySchedule;
       sub.customDays = deliverySchedule === "custom" ? customDays : [];
-      sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date());
+      const holidayDates = await getHolidayDateSet();
+      sub.nextDeliveryDate = calculateNextDeliveryDate(sub, new Date(), holidayDates);
     }
 
     if (quantityPerDay) {
@@ -1013,7 +1069,8 @@ export const skipDeliveryDate = async (req, res) => {
     const nextDelivery = new Date(sub.nextDeliveryDate);
     nextDelivery.setHours(0, 0, 0, 0);
     if (nextDelivery.getTime() === skipDate.getTime()) {
-      sub.nextDeliveryDate = calculateNextDeliveryDate(sub, skipDate);
+      const holidayDates = await getHolidayDateSet();
+      sub.nextDeliveryDate = calculateNextDeliveryDate(sub, skipDate, holidayDates);
     }
 
     await sub.save();

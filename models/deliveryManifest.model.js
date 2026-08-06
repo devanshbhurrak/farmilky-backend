@@ -26,6 +26,10 @@ const manifestEntrySchema = new mongoose.Schema({
   deliveryNotes: { type: String, default: null },
   deliveredAt: { type: Date, default: null },
   failureReason: { type: String, default: null },
+  sequence: { type: Number, default: null },
+  customerId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  lat: { type: Number, default: null },
+  lng: { type: Number, default: null },
 });
 
 const deliveryManifestSchema = new mongoose.Schema(
@@ -59,6 +63,10 @@ const deliveryManifestSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// One sheet per area per date — guards against duplicate generation from
+// concurrent runs (manual button + cron + startup) in a race-safe way.
+deliveryManifestSchema.index({ date: 1, areaId: 1 }, { unique: true });
 
 const DeliveryManifest = mongoose.model("DeliveryManifest", deliveryManifestSchema);
 export default DeliveryManifest;

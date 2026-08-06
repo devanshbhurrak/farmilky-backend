@@ -2,8 +2,40 @@ import bcrypt from "bcrypt";
 import User from "../models/user.model.js";
 import Order from "../models/order.model.js";
 import Subscription from "../models/subscription.model.js";
+import Area from "../models/area.model.js";
 import jwt from "jsonwebtoken";
 import { getAuthCookieOptions, getClearCookieOptions } from "../utils/cookieOptions.js";
+
+const syncAgentArea = async (agentId, areaId) => {
+  const area = areaId ? await Area.findById(areaId) : null;
+  if (areaId && !area) throw new Error("Area not found.");
+
+  const agent = await User.findById(agentId);
+  const prevAreaId = agent?.agentInfo?.assignedArea || agent?.assignedArea;
+
+  if (prevAreaId && prevAreaId.toString() !== String(areaId)) {
+    await Area.findByIdAndUpdate(prevAreaId, { assignedAgent: null });
+  }
+
+  if (area) {
+    if (area.assignedAgent && area.assignedAgent.toString() !== String(agentId)) {
+      await User.findByIdAndUpdate(area.assignedAgent, {
+        assignedArea: null,
+        "agentInfo.assignedArea": null,
+      });
+    }
+    await Area.findByIdAndUpdate(area._id, { assignedAgent: agentId });
+    await User.findByIdAndUpdate(agentId, {
+      assignedArea: area._id,
+      "agentInfo.assignedArea": area._id,
+    });
+  } else {
+    await User.findByIdAndUpdate(agentId, {
+      assignedArea: null,
+      "agentInfo.assignedArea": null,
+    });
+  }
+};
 
 export const registerUser = async (req, res) => {
     try {
@@ -86,6 +118,10 @@ export const createUserAdmin = async (req, res) => {
     }
 
     const newUser = await User.create(userData);
+
+    if (resolvedRole === "agent" && agentInfo?.assignedArea) {
+      await syncAgentArea(newUser._id, agentInfo.assignedArea);
+    }
 
     res.status(201).json({
       message: "User created successfully by admin!",
@@ -275,6 +311,10 @@ export const getUserByIdAdmin = async (req, res) => {
     const user = await User.findById(id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
 
+    if (user.role === "agent") {
+      await user.populate("agentInfo.assignedArea", "name");
+    }
+
     const [recentOrders, subscriptions] = await Promise.all([
       Order.find({ userId: id }).populate("items.productId").sort({ createdAt: -1 }).limit(20),
       Subscription.find({ userId: id }).populate("productId", "name unit image price category"),
@@ -331,7 +371,10 @@ export const updateUserAdmin = async (req, res) => {
       if (agentInfo.joiningDate !== undefined) user.agentInfo.joiningDate = agentInfo.joiningDate;
       if (agentInfo.vehicleType !== undefined) user.agentInfo.vehicleType = agentInfo.vehicleType;
       if (agentInfo.maxCapacity !== undefined) user.agentInfo.maxCapacity = agentInfo.maxCapacity;
-      if (agentInfo.assignedArea !== undefined) user.agentInfo.assignedArea = agentInfo.assignedArea;
+      if (agentInfo.assignedArea !== undefined) {
+        user.agentInfo.assignedArea = agentInfo.assignedArea || null;
+        await syncAgentArea(id, agentInfo.assignedArea || null);
+      }
     }
 
     user.updatedBy = req.user._id;
@@ -350,6 +393,29 @@ export const updateUserAdmin = async (req, res) => {
   } catch (error) {
     console.error("Update User Admin Error:", error);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const updateDeliveryConfig = async (req, res) => {
+  try {
+    const { assignedArea, deliverySequence } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found." });
+
+    if (assignedArea !== undefined) {
+      if (assignedArea) {
+        const area = await Area.findById(assignedArea);
+        if (!area) return res.status(404).json({ message: "Area not found." });
+      }
+      user.assignedArea = assignedArea || null;
+    }
+    if (deliverySequence !== undefined) user.deliverySequence = deliverySequence ?? null;
+
+    await user.save();
+    res.status(200).json({ message: "Delivery config updated.", user });
+  } catch (error) {
+    console.error("Update Delivery Config Error:", error);
+    res.status(500).json({ message: "Failed to update delivery config." });
   }
 };
 

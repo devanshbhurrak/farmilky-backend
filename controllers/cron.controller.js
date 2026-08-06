@@ -2,6 +2,7 @@ import {
   runDailyDeliveryJob,
   runEndOfDayJob,
 } from "../services/scheduler.js";
+import { runDailyManifestGenerationJob } from "../services/manifestService.js";
 
 export const isAuthorizedCronRequest = (req) => {
   const authHeader = req.headers.authorization || "";
@@ -21,9 +22,11 @@ export const runDailyDeliveryCron = async (req, res) => {
     }
 
     const result = await runDailyDeliveryJob();
+    const manifestResult = await runDailyManifestGenerationJob();
     return res.status(200).json({
       message: "Daily delivery job completed",
       ...result,
+      manifests: manifestResult,
     });
   } catch (error) {
     console.error("Daily delivery cron failed:", error);

@@ -1,5 +1,5 @@
 import express from "express";
-import { registerUser, loginUser, logoutUser, updateProfile, getUserProfile, getAllUsersAdmin, getUserByIdAdmin, createUserAdmin, updateUserAdmin } from "../controllers/user.controller.js";
+import { registerUser, loginUser, logoutUser, updateProfile, getUserProfile, getAllUsersAdmin, getUserByIdAdmin, createUserAdmin, updateUserAdmin, updateDeliveryConfig } from "../controllers/user.controller.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { adminOnly } from "../middleware/adminMiddleware.js";
 
@@ -13,6 +13,7 @@ router.get("/profile", authMiddleware, getUserProfile);
 router.get("/admin/all", authMiddleware, adminOnly, getAllUsersAdmin);
 router.get("/admin/:id", authMiddleware, adminOnly, getUserByIdAdmin);
 router.post("/admin/create", authMiddleware, adminOnly, createUserAdmin);
+router.put("/admin/:id/delivery-config", authMiddleware, adminOnly, updateDeliveryConfig);
 router.put("/admin/:id", authMiddleware, adminOnly, updateUserAdmin);
 
 export default router;

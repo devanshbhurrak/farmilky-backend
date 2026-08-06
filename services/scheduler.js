@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import Subscription from "../models/subscription.model.js";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
+import Holiday from "../models/holiday.model.js";
 
 const normalizeDate = (value) => {
   const normalized = new Date(value);
@@ -10,24 +11,43 @@ const normalizeDate = (value) => {
 
 const getDeliveryEntryDate = (entry) => entry.deliveryDate || entry.date;
 
-const getNextCustomDate = (baseDate, customDays = []) => {
+let holidayCache = { dates: null, loadedAt: 0 };
+const HOLIDAY_CACHE_TTL = 10 * 60 * 1000;
+
+export const getHolidayDateSet = async () => {
+  const now = Date.now();
+  if (!holidayCache.dates || now - holidayCache.loadedAt > HOLIDAY_CACHE_TTL) {
+    const holidays = await Holiday.find({ isActive: true }).select("date");
+    holidayCache = {
+      dates: new Set(holidays.map((h) => normalizeDate(h.date).getTime())),
+      loadedAt: now,
+    };
+  }
+  return holidayCache.dates;
+};
+
+const getNextCustomDate = (baseDate, customDays = [], holidayDates = null) => {
   const daysOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   for (let offset = 1; offset <= 7; offset += 1) {
     const candidate = normalizeDate(baseDate);
     candidate.setDate(candidate.getDate() + offset);
-    if (customDays.includes(daysOfWeek[candidate.getDay()])) {
-      return candidate;
-    }
+    if (!customDays.includes(daysOfWeek[candidate.getDay()])) continue;
+    if (holidayDates && holidayDates.has(candidate.getTime())) continue;
+    return candidate;
   }
 
+  // Fallback: next day that is not a holiday
   const fallback = normalizeDate(baseDate);
   fallback.setDate(fallback.getDate() + 1);
+  if (holidayDates) {
+    while (holidayDates.has(fallback.getTime())) {
+      fallback.setDate(fallback.getDate() + 1);
+    }
+  }
   return fallback;
 };
 
-export const calculateNextDeliveryDate = (subscription, referenceDate = new Date()) => {
-  const current = normalizeDate(referenceDate);
-
+const stepSchedule = (subscription, current) => {
   if (subscription.deliverySchedule === "daily") {
     current.setDate(current.getDate() + 1);
     return current;
@@ -44,17 +64,40 @@ export const calculateNextDeliveryDate = (subscription, referenceDate = new Date
   }
 
   if (subscription.deliverySchedule === "custom") {
-    return getNextCustomDate(current, subscription.customDays);
+    return null; // handled separately with holiday-aware search
   }
 
   current.setDate(current.getDate() + 1);
   return current;
 };
 
-export const isSubscriptionDueOnDate = (subscription, date = new Date()) => {
+export const calculateNextDeliveryDate = (subscription, referenceDate = new Date(), holidayDates = null) => {
+  const current = normalizeDate(referenceDate);
+
+  if (subscription.deliverySchedule === "custom") {
+    return getNextCustomDate(current, subscription.customDays, holidayDates);
+  }
+
+  const next = stepSchedule(subscription, current);
+  if (holidayDates) {
+    let guard = 0;
+    while (holidayDates.has(normalizeDate(next).getTime()) && guard < 30) {
+      stepSchedule(subscription, next);
+      guard += 1;
+    }
+  }
+  return next;
+};
+
+export const isSubscriptionDueOnDate = (subscription, date = new Date(), holidayDates = null) => {
   const normalizedDate = normalizeDate(date);
 
   if (subscription.status !== "active") {
+    return false;
+  }
+
+  // No deliveries on holidays
+  if (holidayDates && holidayDates.has(normalizedDate.getTime())) {
     return false;
   }
 
@@ -82,13 +125,15 @@ export const isSubscriptionDueOnDate = (subscription, date = new Date()) => {
 export const runDailyDeliveryJob = async () => {
   console.log("Running daily delivery job...");
 
+  const holidayDates = await getHolidayDateSet();
+
   let pendingCount = 0;
   const activeSubs = await Subscription.find({ status: "active" });
 
   const today = normalizeDate(new Date());
 
   for (const sub of activeSubs) {
-    if (!isSubscriptionDueOnDate(sub, today)) {
+    if (!isSubscriptionDueOnDate(sub, today, holidayDates)) {
       continue;
     }
 
@@ -134,7 +179,7 @@ export const runDailyDeliveryJob = async () => {
     "vacationSchedule.pauseFrom": { $ne: null },
   });
   for (const sub of expiredVacations) {
-    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, sub.vacationSchedule.pauseUntil);
+    sub.nextDeliveryDate = calculateNextDeliveryDate(sub, sub.vacationSchedule.pauseUntil, holidayDates);
     sub.vacationSchedule = { pauseFrom: null, pauseUntil: null };
     await sub.save();
   }
@@ -221,6 +266,18 @@ const initScheduler = () => {
       await runEndOfDayJob();
     } catch (error) {
       console.error("End-of-day job failed:", error);
+    }
+  });
+
+  // Generate/refresh today's manifests at 00:05, after the maintenance job above,
+  // so sheets exist before agents log in. Late orders/subscriptions are appended
+  // to active sheets, keeping the day's route fresh without manual intervention.
+  cron.schedule("5 0 * * *", async () => {
+    try {
+      const { runDailyManifestGenerationJob } = await import("./manifestService.js");
+      await runDailyManifestGenerationJob();
+    } catch (error) {
+      console.error("Daily manifest generation job failed:", error);
     }
   });
 };

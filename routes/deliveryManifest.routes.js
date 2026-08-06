@@ -8,6 +8,7 @@ import {
   getMyTodayManifest,
   getMyManifestHistory,
   updateManifestEntry,
+  resequenceManifest,
 } from "../controllers/deliveryManifest.controller.js";
 
 const router = express.Router();
@@ -20,6 +21,9 @@ router.get("/my/history", authMiddleware, deliveryPartnerOrAdmin, getMyManifestH
 router.post("/generate", authMiddleware, adminOnly, generateDailyManifests);
 router.get("/", authMiddleware, adminOnly, getManifestsByDate);
 router.get("/:id", authMiddleware, deliveryPartnerOrAdmin, getManifestById);
+
+// Admin resequence
+router.put("/:id/resequence", authMiddleware, adminOnly, resequenceManifest);
 
 // Agent entry update
 router.put("/:id/entries/:entryId", authMiddleware, deliveryPartnerOrAdmin, updateManifestEntry);

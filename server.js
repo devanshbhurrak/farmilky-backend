@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
+import mongoose from "mongoose";
 import rateLimit from "express-rate-limit";
 import { connectDB } from './config/db.js'
 import { getAllowedOrigins, validateEnv } from "./config/env.js";
@@ -27,6 +28,7 @@ import milkCollectionRoutes from "./routes/milkCollection.routes.js";
 import supplierPaymentRoutes from "./routes/supplierPayment.routes.js";
 
 import initScheduler from "./services/scheduler.js";
+import { runDailyManifestGenerationJob } from "./services/manifestService.js";
 
 dotenv.config()
 validateEnv();
@@ -34,6 +36,19 @@ validateEnv();
 const app = express();
 connectDB()
 const PORT = process.env.PORT || 4000
+
+// Ensure today's sheets exist even if the server restarts mid-day.
+// Idempotent: no-ops when the day's manifests were already generated.
+const runStartupManifestGeneration = () => {
+    runDailyManifestGenerationJob().catch((error) => {
+        console.error("Startup manifest generation failed:", error);
+    });
+};
+if (mongoose.connection.readyState === 1) {
+    runStartupManifestGeneration();
+} else {
+    mongoose.connection.once("open", runStartupManifestGeneration);
+}
 
 if (process.env.ENABLE_LOCAL_SCHEDULER === "true" && process.env.NODE_ENV !== "production") {
     initScheduler();

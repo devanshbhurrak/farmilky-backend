@@ -2,9 +2,8 @@ import mongoose from "mongoose";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
-import Area from "../models/area.model.js";
-import User from "../models/user.model.js";
-import { isSubscriptionDueOnDate, calculateNextDeliveryDate } from "../services/scheduler.js";
+import { calculateNextDeliveryDate, getHolidayDateSet } from "../services/scheduler.js";
+import { generateManifestsForDate } from "../services/manifestService.js";
 
 const normalizeDate = (d) => {
   const date = new Date(d);
@@ -12,135 +11,30 @@ const normalizeDate = (d) => {
   return date;
 };
 
-const addressToString = (addr) => {
-  if (!addr) return "";
-  return [addr.street, addr.city, addr.state, addr.pincode].filter(Boolean).join(", ");
+const isValidDate = (value) => {
+  const time = new Date(value).getTime();
+  return !Number.isNaN(time);
 };
 
-// POST /api/manifests/generate — admin generates manifests for a date
+// POST /api/manifests/generate — admin generates/refreshes manifests for a date
 export const generateDailyManifests = async (req, res) => {
   try {
-    const targetDate = req.body.date ? normalizeDate(req.body.date) : normalizeDate(new Date());
+    const result = await generateManifestsForDate(req.body.date || undefined, { refresh: true });
 
-    // Fetch all areas with assigned agents
-    const areas = await Area.find({ isActive: true, assignedAgent: { $ne: null } });
-    if (areas.length === 0) {
-      return res.status(400).json({ message: "No active areas with assigned agents found." });
+    if (result.status === "invalid") {
+      return res.status(400).json({ message: result.message });
     }
-
-    // Build pincode -> area map
-    const pincodeAreaMap = {};
-    for (const area of areas) {
-      for (const pincode of area.pincodes) {
-        pincodeAreaMap[pincode] = area;
-      }
+    if (result.status === "holiday") {
+      return res.status(200).json({ message: result.message, manifests: [], unassignedCount: 0 });
     }
-
-    // Fetch active subscriptions due on targetDate
-    const activeSubs = await Subscription.find({ status: "active" })
-      .populate("userId", "name phone addresses")
-      .populate("productId", "name unit price");
-
-    const dueSubs = activeSubs.filter((sub) => isSubscriptionDueOnDate(sub, targetDate));
-
-    // Fetch pending/confirmed orders
-    const dueOrders = await Order.find({ orderStatus: { $in: ["placed", "confirmed"] } })
-      .populate("userId", "name phone");
-
-    // Group entries by area
-    const areaEntries = {};
-    for (const area of areas) {
-      areaEntries[area._id.toString()] = [];
-    }
-
-    // Unassigned bucket (area not matched)
-    const unassigned = [];
-
-    for (const sub of dueSubs) {
-      const user = sub.userId;
-      const addresses = user?.addresses || [];
-      const defaultAddr = addresses.find((a) => a.isDefault) || addresses[0];
-      const pincode = defaultAddr?.pincode || "";
-      const matchedArea = pincodeAreaMap[pincode];
-      const effectiveUnit = sub.variantUnit || sub.productId?.unit || "unit";
-      const productName = sub.productId?.name || "Unknown";
-      const variantSuffix = sub.variantLabel ? ` (${sub.variantLabel})` : "";
-      const entry = {
-        type: "subscription",
-        referenceId: sub._id,
-        customerName: user?.name || "Unknown",
-        phone: user?.phone || "",
-        address: addressToString(defaultAddr),
-        productLabel: `${productName}${variantSuffix} × ${sub.quantityPerDay} ${effectiveUnit}`,
-        quantity: sub.quantityPerDay,
-        unit: effectiveUnit,
-        amount: sub.totalPricePerDay || 0,
-        status: "pending",
-      };
-      if (matchedArea) {
-        areaEntries[matchedArea._id.toString()].push(entry);
-      } else {
-        unassigned.push(entry);
-      }
-    }
-
-    for (const order of dueOrders) {
-      const user = order.userId;
-      const addr = order.address;
-      const pincode = addr?.pincode || "";
-      const matchedArea = pincodeAreaMap[pincode];
-      const entry = {
-        type: "order",
-        referenceId: order._id,
-        customerName: user?.name || "Unknown",
-        phone: user?.phone || "",
-        address: addressToString(addr),
-        productLabel: order.items.map((i) => `${i.name} x${i.quantity}`).join(", "),
-        quantity: order.items.reduce((s, i) => s + i.quantity, 0),
-        unit: "items",
-        amount: order.totalAmount,
-        status: "pending",
-      };
-      if (matchedArea) {
-        areaEntries[matchedArea._id.toString()].push(entry);
-      } else {
-        unassigned.push(entry);
-      }
-    }
-
-    const createdManifests = [];
-
-    for (const area of areas) {
-      const entries = areaEntries[area._id.toString()];
-      if (entries.length === 0) continue;
-
-      // Check if manifest already exists for this area+date
-      const existing = await DeliveryManifest.findOne({ date: targetDate, areaId: area._id });
-      if (existing) {
-        createdManifests.push(existing);
-        continue;
-      }
-
-      const manifest = await DeliveryManifest.create({
-        date: targetDate,
-        agentId: area.assignedAgent,
-        areaId: area._id,
-        entries,
-        summary: {
-          total: entries.length,
-          delivered: 0,
-          failed: 0,
-          pending: entries.length,
-        },
-        status: "active",
-      });
-      createdManifests.push(manifest);
+    if (result.status === "no_areas") {
+      return res.status(400).json({ message: result.message });
     }
 
     res.status(201).json({
-      message: `Generated ${createdManifests.length} manifests for ${targetDate.toDateString()}.`,
-      manifests: createdManifests,
-      unassignedCount: unassigned.length,
+      message: result.message,
+      manifests: result.manifests,
+      unassignedCount: result.unassignedCount,
     });
   } catch (error) {
     console.error("Generate Manifests Error:", error);
@@ -152,6 +46,9 @@ export const generateDailyManifests = async (req, res) => {
 export const getManifestsByDate = async (req, res) => {
   try {
     const date = req.query.date ? normalizeDate(req.query.date) : normalizeDate(new Date());
+    if (!isValidDate(date)) {
+      return res.status(400).json({ message: "Invalid date. Expected YYYY-MM-DD." });
+    }
     const manifests = await DeliveryManifest.find({ date })
       .populate("agentId", "name phone email")
       .populate("areaId", "name localities");
@@ -195,7 +92,7 @@ export const getMyTodayManifest = async (req, res) => {
 export const getMyManifestHistory = async (req, res) => {
   try {
     const agentId = req.user._id;
-    const days = parseInt(req.query.days || "7", 10);
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days || "7", 10) || 7));
     const since = normalizeDate(new Date());
     since.setDate(since.getDate() - days);
     const manifests = await DeliveryManifest.find({ agentId, date: { $gte: since } })
@@ -207,6 +104,52 @@ export const getMyManifestHistory = async (req, res) => {
   }
 };
 
+// PUT /api/manifests/:id/resequence — admin reorders manifest entries post-generation
+export const resequenceManifest = async (req, res) => {
+  try {
+    const { orderedEntryIds } = req.body;
+    if (!Array.isArray(orderedEntryIds)) {
+      return res.status(400).json({ message: "orderedEntryIds must be an array." });
+    }
+
+    const manifest = await DeliveryManifest.findById(req.params.id);
+    if (!manifest) return res.status(404).json({ message: "Manifest not found." });
+
+    const orderedSet = new Set(orderedEntryIds);
+    if (orderedSet.size !== orderedEntryIds.length) {
+      return res.status(400).json({ message: "Duplicate entry IDs in orderedEntryIds." });
+    }
+
+    const entryMap = {};
+    for (const entry of manifest.entries) {
+      entryMap[entry._id.toString()] = entry;
+    }
+
+    const reordered = [];
+    for (let i = 0; i < orderedEntryIds.length; i++) {
+      const entry = entryMap[orderedEntryIds[i]];
+      if (!entry) return res.status(400).json({ message: `Entry ${orderedEntryIds[i]} not found in manifest.` });
+      entry.sequence = i + 1;
+      reordered.push(entry);
+    }
+
+    // Append any entries not in orderedEntryIds (unsequenced, at end) — O(1) lookup via Set
+    for (const entry of manifest.entries) {
+      if (!orderedSet.has(entry._id.toString())) {
+        entry.sequence = null;
+        reordered.push(entry);
+      }
+    }
+
+    manifest.entries = reordered;
+    await manifest.save();
+    res.status(200).json({ message: "Manifest resequenced.", manifest });
+  } catch (error) {
+    console.error("Resequence Manifest Error:", error);
+    res.status(500).json({ message: "Failed to resequence manifest." });
+  }
+};
+
 // PUT /api/manifests/:id/entries/:entryId — agent updates an entry
 export const updateManifestEntry = async (req, res) => {
   try {
@@ -214,8 +157,18 @@ export const updateManifestEntry = async (req, res) => {
     const { status, deliveryNotes, failureReason, proofOfDelivery, paymentMode = "pay_at_delivery", subscriptionId } = req.body;
     const agentId = req.user._id;
 
-    const manifest = await DeliveryManifest.findOne({ _id: id, agentId });
+    const VALID_ENTRY_STATUSES = ["pending", "delivered", "failed", "skipped"];
+    if (status !== undefined && !VALID_ENTRY_STATUSES.includes(status)) {
+      return res.status(400).json({ message: `Invalid status. Must be one of: ${VALID_ENTRY_STATUSES.join(", ")}.` });
+    }
+
+    // Admins may update any manifest; agents/delivery partners only their own
+    const manifest = req.user.role === "admin"
+      ? await DeliveryManifest.findById(id)
+      : await DeliveryManifest.findOne({ _id: id, agentId });
     if (!manifest) return res.status(404).json({ message: "Manifest not found." });
+
+    const holidayDates = await getHolidayDateSet();
 
     const entry = manifest.entries.id(entryId);
     if (!entry) return res.status(404).json({ message: "Entry not found." });
@@ -259,7 +212,7 @@ export const updateManifestEntry = async (req, res) => {
                         handledBy: agentId,
                         handledAt: new Date(),
                     };
-                    const nextDeliveryDate = calculateNextDeliveryDate(freshSub, manifest.date);
+                    const nextDeliveryDate = calculateNextDeliveryDate(freshSub, manifest.date, holidayDates);
 
                     const subSession = await mongoose.startSession();
                     try {
