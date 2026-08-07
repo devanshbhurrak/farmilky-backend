@@ -39,10 +39,14 @@ const syncAgentArea = async (agentId, areaId) => {
 
 export const registerUser = async (req, res) => {
     try {
-        const { name, email, phone, password } = req.body;
+        const { name, email, phone, password, address } = req.body;
 
         if (!name || !email || !phone || !password) {
             return res.status(400).json({ message: "All fields are required!" });
+        }
+
+        if (!/^[6-9]\d{9}$/.test(phone)) {
+            return res.status(400).json({ message: "Enter a valid 10-digit Indian mobile number." });
         }
 
         const existingUser = await User.findOne({ email })
@@ -52,9 +56,26 @@ export const registerUser = async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const newUser = new User({
-            name, email, phone, password: hashedPassword
-        })
+        const userData = { name, email, phone, password: hashedPassword };
+
+        // Store optional address (with lat/lng) collected during sign-up
+        if (address && typeof address === "object") {
+            const { street, city, state, pincode, lat, lng, type } = address;
+            const hasContent = street || city || state || pincode || lat || lng;
+            if (hasContent) {
+                userData.addresses = [{
+                    street: street || "",
+                    city: city || "",
+                    state: state || "",
+                    pincode: pincode ? Number(pincode) : undefined,
+                    lat: lat ?? null,
+                    lng: lng ?? null,
+                    type: ["home", "work", "other"].includes(type) ? type : "home",
+                }];
+            }
+        }
+
+        const newUser = new User(userData);
 
         await newUser.save();
 
