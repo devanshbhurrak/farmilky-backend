@@ -13,6 +13,11 @@ const paymentSchema = new mongoose.Schema({
   transactionId: {
     type: String,
   },
+  type: {
+    type: String,
+    enum: ["payment", "credit_adjustment", "debit_adjustment"],
+    default: "payment",
+  },
   notes: {
     type: String,
   },

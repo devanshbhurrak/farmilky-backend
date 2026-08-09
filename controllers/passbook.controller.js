@@ -75,16 +75,20 @@ export const getCustomerPassbook = async (req, res) => {
       .populate("recordedBy", "name")
       .lean();
     
-    const paymentEntries = payments.map(pay => ({
-      date: pay.date,
-      type: "credit",
-      amount: pay.amount,
-      description: "Payment Received",
-      notes: pay.notes || pay.transactionId || "",
-      recordedBy: pay.recordedBy?.name,
-      referenceId: pay._id,
-      category: "Payment"
-    }));
+    const paymentEntries = payments.map(pay => {
+      const isDebitAdj = pay.type === "debit_adjustment";
+      const isAdjustment = pay.type === "credit_adjustment" || pay.type === "debit_adjustment";
+      return {
+        date: pay.date,
+        type: isDebitAdj ? "debit" : "credit",
+        amount: pay.amount,
+        description: isDebitAdj ? "Manual Debit" : isAdjustment ? "Manual Credit" : "Payment Received",
+        notes: pay.notes || pay.transactionId || "",
+        recordedBy: pay.recordedBy?.name,
+        referenceId: pay._id,
+        category: isAdjustment ? "Adjustment" : "Payment",
+      };
+    });
 
     // 4. Merge & Sort
     let allEntries = [...deliveryEntries, ...orderEntries, ...paymentEntries];

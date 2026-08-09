@@ -4,35 +4,46 @@ import User from "../models/user.model.js";
 
 export const recordPaymentAdmin = async (req, res) => {
     try {
-        const { userId, amount, transactionId, notes, date } = req.body;
+        const { userId, amount, transactionId, notes, date, type = "payment" } = req.body;
 
         const parsedAmount = Number(amount);
         if (!userId || !amount || isNaN(parsedAmount) || parsedAmount <= 0) {
             return res.status(400).json({ message: "User and a positive amount are required." });
         }
 
+        const validTypes = ["payment", "credit_adjustment", "debit_adjustment"];
+        if (!validTypes.includes(type)) {
+            return res.status(400).json({ message: "Invalid adjustment type." });
+        }
+
         const payment = new Payment({
             userId,
             amount: parsedAmount,
+            type,
             transactionId,
             notes,
             recordedBy: req.user._id,
             date: date ? new Date(date) : new Date(),
         });
 
+        // credit_adjustment and payment both reduce balance (give customer money / receive payment)
+        // debit_adjustment increases balance (charge customer)
+        const balanceDelta = type === "debit_adjustment" ? parsedAmount : -parsedAmount;
+
         const session = await mongoose.startSession();
         try {
             await session.withTransaction(async () => {
                 await payment.save({ session });
                 await User.findByIdAndUpdate(userId, {
-                    $inc: { accountBalance: -parsedAmount }
+                    $inc: { accountBalance: balanceDelta }
                 }, { session });
             });
         } finally {
             await session.endSession();
         }
 
-        res.status(201).json({ message: "Payment recorded successfully.", payment });
+        const message = type === "payment" ? "Payment recorded successfully." : "Adjustment recorded successfully.";
+        res.status(201).json({ message, payment });
     } catch (error) {
         console.error("Record Payment Error:", error);
         res.status(500).json({ message: "Failed to record payment." });
@@ -45,11 +56,14 @@ export const deletePaymentAdmin = async (req, res) => {
         const payment = await Payment.findById(id);
         if (!payment) return res.status(404).json({ message: "Payment not found" });
 
+        // Revert the balance change — mirror the original delta
+        const revertDelta = payment.type === "debit_adjustment" ? -payment.amount : payment.amount;
+
         const session = await mongoose.startSession();
         try {
             await session.withTransaction(async () => {
                 await User.findByIdAndUpdate(payment.userId, {
-                    $inc: { accountBalance: payment.amount }
+                    $inc: { accountBalance: revertDelta }
                 }, { session });
                 await Payment.findByIdAndDelete(id, { session });
             });
@@ -57,7 +71,7 @@ export const deletePaymentAdmin = async (req, res) => {
             await session.endSession();
         }
 
-        res.status(200).json({ message: "Payment deleted and balance reverted." });
+        res.status(200).json({ message: "Entry deleted and balance reverted." });
     } catch (error) {
         console.error("Delete Payment Error:", error);
         res.status(500).json({ message: "Failed to delete payment." });
