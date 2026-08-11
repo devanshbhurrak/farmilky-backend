@@ -72,13 +72,21 @@ export const updateOrderAdmin = async (req, res) => {
     if (paymentMethod) order.paymentMethod = paymentMethod;
     if (paymentStatus) order.paymentStatus = paymentStatus;
 
+    // Capture before any clearing — needed for subscription reversal in the transaction
+    const originalPaymentMode = order.paymentMode;
+    const originalLinkedSubscriptionId = order.linkedSubscriptionId;
+
     let balanceAdjustment = 0;
     const statusChanged = orderStatus && orderStatus !== oldStatus;
 
     if (statusChanged) {
       if (oldStatus === "delivered") {
-        // Was delivered, now something else -> reverse using OLD amount
+        // Was delivered, now something else → reverse using OLD amount
         balanceAdjustment -= oldTotalAmount;
+        // Clear stale payment mode fields so the saved document is clean
+        order.paymentMode = "pay_at_delivery";
+        order.linkedSubscriptionId = null;
+        order.deliveredAt = null;
       }
 
       order.orderStatus = orderStatus;
@@ -124,7 +132,13 @@ export const updateOrderAdmin = async (req, res) => {
           await User.findByIdAndUpdate(order.userId, {
             $inc: { accountBalance: balanceAdjustment }
           }, { session });
-          if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
+          // Revert case: was subscription_ledger delivered, now being un-delivered
+          if (oldStatus === "delivered" && originalPaymentMode === "subscription_ledger" && originalLinkedSubscriptionId) {
+            await Subscription.findByIdAndUpdate(originalLinkedSubscriptionId, {
+              $inc: { pendingAmount: balanceAdjustment }
+            }, { session });
+          // New or updated delivery via subscription_ledger, or items changed on subscription_ledger order
+          } else if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
             await Subscription.findByIdAndUpdate(order.linkedSubscriptionId, {
               $inc: { pendingAmount: balanceAdjustment }
             }, { session });
@@ -619,6 +633,10 @@ export const updateOrderStatus = async (req, res) => {
             return res.status(200).json({ message: 'Order status updated successfully', order, adjustment: 0 });
         }
 
+        // Capture original values before clearing — needed for subscription reversal
+        const originalPaymentMode = order.paymentMode;
+        const originalLinkedSubscriptionId = order.linkedSubscriptionId;
+
         let balanceAdjustment = 0;
         if (oldStatus === "delivered") {
             balanceAdjustment -= order.totalAmount;
@@ -688,7 +706,13 @@ export const updateOrderStatus = async (req, res) => {
                     await User.findByIdAndUpdate(order.userId, {
                         $inc: { accountBalance: balanceAdjustment }
                     }, { session });
-                    if (order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
+                    // Revert case: was subscription_ledger, now being un-delivered
+                    if (oldStatus === "delivered" && originalPaymentMode === "subscription_ledger" && originalLinkedSubscriptionId) {
+                        await Subscription.findByIdAndUpdate(originalLinkedSubscriptionId, {
+                            $inc: { pendingAmount: balanceAdjustment }
+                        }, { session });
+                    // New delivery case: being set to delivered via subscription_ledger
+                    } else if (status === "delivered" && order.paymentMode === "subscription_ledger" && order.linkedSubscriptionId) {
                         await Subscription.findByIdAndUpdate(order.linkedSubscriptionId, {
                             $inc: { pendingAmount: balanceAdjustment }
                         }, { session });

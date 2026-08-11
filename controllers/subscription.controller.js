@@ -261,7 +261,7 @@ export const resumeSubscription = async (req, res) => {
 
         res.status(200).json({message: 'Subscription resumed', subscription: sub});
     } catch (error) {
-        console.error('Resume Subscriptin Error:', error);
+        console.error('Resume Subscription Error:', error);
         res.status(500).json({message: 'Failed to resume subscription'})
     }
 }
