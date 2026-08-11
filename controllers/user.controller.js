@@ -41,22 +41,30 @@ export const registerUser = async (req, res) => {
     try {
         const { name, email, phone, password, address } = req.body;
 
-        if (!name || !email || !phone || !password) {
-            return res.status(400).json({ message: "All fields are required!" });
+        if (!name || !phone || !password) {
+            return res.status(400).json({ message: "Name, phone, and password are required!" });
         }
 
         if (!/^[6-9]\d{9}$/.test(phone)) {
             return res.status(400).json({ message: "Enter a valid 10-digit Indian mobile number." });
         }
 
-        const existingUser = await User.findOne({ email })
-        if (existingUser) {
-            return res.status(409).json({ message: 'User already exists!' });
+        if (email && email.trim()) {
+            const existingEmail = await User.findOne({ email });
+            if (existingEmail) {
+                return res.status(409).json({ message: "An account with this email already exists!" });
+            }
+        }
+
+        const existingPhone = await User.findOne({ phone });
+        if (existingPhone) {
+            return res.status(409).json({ message: "An account with this phone number already exists!" });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const userData = { name, email, phone, password: hashedPassword };
+        const userData = { name, phone, password: hashedPassword };
+        if (email && email.trim()) userData.email = email.toLowerCase().trim();
 
         // Store optional address (with lat/lng) collected during sign-up
         if (address && typeof address === "object") {
@@ -106,13 +114,20 @@ export const createUserAdmin = async (req, res) => {
   try {
     const { name, email, phone, password, role, addresses, isActive, agentInfo } = req.body;
 
-    if (!name || !email || !phone || !password) {
-      return res.status(400).json({ message: "Name, email, phone, and password are required!" });
+    if (!name || !phone || !password) {
+      return res.status(400).json({ message: "Name, phone, and password are required!" });
     }
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(409).json({ message: "User already exists!" });
+    if (email && email.trim()) {
+      const existingEmail = await User.findOne({ email });
+      if (existingEmail) {
+        return res.status(409).json({ message: "An account with this email already exists!" });
+      }
+    }
+
+    const existingPhone = await User.findOne({ phone });
+    if (existingPhone) {
+      return res.status(409).json({ message: "An account with this phone number already exists!" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -120,7 +135,6 @@ export const createUserAdmin = async (req, res) => {
 
     const userData = {
       name,
-      email,
       phone,
       password: hashedPassword,
       role: resolvedRole,
@@ -128,6 +142,7 @@ export const createUserAdmin = async (req, res) => {
       isActive: isActive ?? true,
       createdBy: req.user?._id || null,
     };
+    if (email && email.trim()) userData.email = email.toLowerCase().trim();
 
     if (resolvedRole === "agent") {
       userData.agentInfo = {
@@ -162,30 +177,37 @@ export const createUserAdmin = async (req, res) => {
 
 export const loginUser = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { identifier, password } = req.body;
 
-        if (!email || !password)
-            return res.status(400).json({ message: "Email and Password required!" });
+        if (!identifier || !password)
+            return res.status(400).json({ message: "Identifier and password are required!" });
 
-        const user = await User.findOne({ email }).select('+password');
+        const isEmail = identifier.includes("@");
+        const isPhone = /^[6-9]\d{9}$/.test(identifier);
+
+        if (!isEmail && !isPhone)
+            return res.status(400).json({ message: "Enter a valid email or 10-digit Indian mobile number." });
+
+        const query = isEmail ? { email: identifier.toLowerCase().trim() } : { phone: identifier };
+        const user = await User.findOne(query).select("+password");
 
         if (!user) {
-            console.warn(`[Auth] Failed login attempt: User not found (${email})`);
-            return res.status(401).json({ message: "Invalid email or password!" });
+            console.warn(`[Auth] Failed login attempt: User not found (${identifier})`);
+            return res.status(401).json({ message: "Invalid credentials!" });
         }
 
         const isMatch = await bcrypt.compare(password, user.password);
 
         if (!isMatch) {
-            console.warn(`[Auth] Failed login attempt: Invalid credentials for ${email}`);
-            return res.status(401).json({ message: "Invalid email or password!" });
+            console.warn(`[Auth] Failed login attempt: Invalid password for ${identifier}`);
+            return res.status(401).json({ message: "Invalid credentials!" });
         }
 
         const token = jwt.sign(
             { id: user._id },
             process.env.JWT_SECRET,
-            { expiresIn: '7d' }
-        )
+            { expiresIn: "7d" }
+        );
 
         res.cookie("token", token, getAuthCookieOptions());
 
@@ -226,7 +248,18 @@ export const updateProfile = async (req, res) => {
         }
 
         if (name) user.name = name;
-        if (phone) user.phone = phone;
+        if (phone) {
+            if (!/^[6-9]\d{9}$/.test(phone)) {
+                return res.status(400).json({ message: "Enter a valid 10-digit Indian mobile number." });
+            }
+            if (phone !== user.phone) {
+                const existingPhone = await User.findOne({ phone, _id: { $ne: userId } });
+                if (existingPhone) {
+                    return res.status(409).json({ message: "This phone number is already in use by another account." });
+                }
+            }
+            user.phone = phone;
+        }
         if (addresses) user.addresses = addresses;
         if (deliveryPreferences) user.deliveryPreferences = deliveryPreferences;
 
@@ -379,7 +412,16 @@ export const updateUserAdmin = async (req, res) => {
       if (existing) return res.status(409).json({ message: "Email is already in use by another account." });
       user.email = email;
     }
-    if (phone) user.phone = phone;
+    if (phone) {
+      if (!/^[6-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ message: "Enter a valid 10-digit Indian mobile number." });
+      }
+      if (phone !== user.phone) {
+        const existingPhone = await User.findOne({ phone, _id: { $ne: id } });
+        if (existingPhone) return res.status(409).json({ message: "Phone number is already in use by another account." });
+      }
+      user.phone = phone;
+    }
     if (role) user.role = role;
     if (addresses) user.addresses = addresses;
     if (isActive !== undefined) user.isActive = isActive;
