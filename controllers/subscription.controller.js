@@ -164,7 +164,10 @@ export const createSubscription = async (req, res) => {
     let startDate = new Date();
     if (req.body.startDate) {
       const parsed = new Date(req.body.startDate);
-      if (!Number.isNaN(parsed.getTime()) && parsed > new Date()) {
+      parsed.setHours(0, 0, 0, 0);
+      const todayNormalized = new Date();
+      todayNormalized.setHours(0, 0, 0, 0);
+      if (!Number.isNaN(parsed.getTime()) && parsed >= todayNormalized) {
         startDate = parsed;
       }
     }

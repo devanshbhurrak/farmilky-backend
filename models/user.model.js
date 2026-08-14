@@ -13,6 +13,7 @@ const userSchema = new mongoose.Schema(
       sparse: true,
       lowercase: true,
       trim: true,
+      set: (v) => (v && v.trim() ? v : undefined),
     },
     password: {
       type: String,
