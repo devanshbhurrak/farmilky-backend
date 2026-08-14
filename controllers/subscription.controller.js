@@ -78,7 +78,7 @@ export const createSubscriptionAdmin = async (req, res) => {
     const nextDeliveryDate =
       startDate.getTime() > today.getTime()
         ? startDate
-        : calculateNextDeliveryDate({ deliverySchedule, customDays }, startDate, holidayDates);
+        : calculateNextDeliveryDate({ deliverySchedule, customDays }, today, holidayDates);
 
     const subscription = new Subscription({
       userId,
@@ -654,6 +654,10 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
     const targetDate = deliveryDate ? new Date(deliveryDate) : new Date();
     targetDate.setHours(0, 0, 0, 0);
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isBackdate = targetDate.getTime() <= today.getTime();
+
     const holidayDates = await getHolidayDateSet();
 
     // Check if an outcome for this date already exists to handle updates/corrections
@@ -710,11 +714,21 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
         subscription.deliveryHistory[existingEntryIndex] = deliveryEntry;
     } else {
         // New Entry
-        if (!isSubscriptionDueOnDate(subscription, targetDate, holidayDates)) {
-            return res.status(400).json({ message: "This subscription is not due for delivery on this date." });
+        if (isBackdate) {
+            // Admin backdating: bypass schedule due-on-date check
+            if (subscription.status === "cancelled") {
+                return res.status(400).json({ message: "Cannot record delivery for a cancelled subscription." });
+            }
+            subscription.deliveryHistory.push(deliveryEntry);
+            // Do NOT update nextDeliveryDate — past recording must not regress future scheduling
+        } else {
+            // Present/future date: enforce normal schedule
+            if (!isSubscriptionDueOnDate(subscription, targetDate, holidayDates)) {
+                return res.status(400).json({ message: "This subscription is not due for delivery on this date." });
+            }
+            subscription.deliveryHistory.push(deliveryEntry);
+            subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate, holidayDates);
         }
-        subscription.deliveryHistory.push(deliveryEntry);
-        subscription.nextDeliveryDate = calculateNextDeliveryDate(subscription, targetDate, holidayDates);
     }
 
     const session = await mongoose.startSession();
@@ -727,11 +741,14 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
             $inc: { pendingAmount: balanceAdjustment },
           }, { session });
         } else {
-          await Subscription.findByIdAndUpdate(subscription._id, {
+          const newEntryOp = {
             $push: { deliveryHistory: deliveryEntry },
-            $set: { nextDeliveryDate: subscription.nextDeliveryDate },
             $inc: { pendingAmount: finalTotalAmount },
-          }, { session });
+          };
+          if (!isBackdate) {
+            newEntryOp.$set = { nextDeliveryDate: subscription.nextDeliveryDate };
+          }
+          await Subscription.findByIdAndUpdate(subscription._id, newEntryOp, { session });
         }
         if (balanceAdjustment !== 0) {
           await User.findByIdAndUpdate(subscription.userId._id || subscription.userId, {
