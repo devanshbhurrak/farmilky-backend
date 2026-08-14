@@ -606,6 +606,143 @@ export const recordOrderDeliveryOutcome = async (req, res) => {
   }
 };
 
+export const createInstantDelivery = async (req, res) => {
+  try {
+    const { customerId, items, paymentMode = "pay_at_delivery", subscriptionId, notes, date } = req.body;
+
+    if (!customerId) {
+      return res.status(400).json({ message: "customerId is required." });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "At least one item is required." });
+    }
+    if (!["pay_at_delivery", "subscription_ledger"].includes(paymentMode)) {
+      return res.status(400).json({ message: "paymentMode must be 'pay_at_delivery' or 'subscription_ledger'." });
+    }
+    if (paymentMode === "subscription_ledger" && !subscriptionId) {
+      return res.status(400).json({ message: "subscriptionId is required for subscription_ledger payment mode." });
+    }
+
+    // Validate each item
+    for (const item of items) {
+      if (!item.productId) return res.status(400).json({ message: "Each item must have a productId." });
+      const qty = Number(item.quantity);
+      if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ message: `Invalid quantity for product ${item.productId}. Must be a positive integer.` });
+      }
+      const price = Number(item.price);
+      if (isNaN(price) || price < 0) {
+        return res.status(400).json({ message: `Invalid price for product ${item.productId}. Must be >= 0.` });
+      }
+    }
+
+    // Resolve products — validates each productId and fetches image/unit
+    const orderItems = await Promise.all(
+      items.map(async (item) => {
+        const product = await Product.findById(item.productId);
+        if (!product) throw new Error(`Product ${item.productId} not found.`);
+        if (!product.isAvailable) throw new Error(`Product "${product.name}" is not available.`);
+
+        const effectivePrice = Number(item.price) >= 0 ? Number(item.price) : product.price;
+        let variantId = null;
+        let variantLabel = null;
+        let unit = product.unit ?? "unit";
+        let originalPrice = null;
+
+        if (item.variantId && product.variants?.length > 0) {
+          const variant = product.variants.id(item.variantId);
+          if (variant) {
+            variantId = variant._id;
+            variantLabel = variant.label;
+            unit = variant.unit;
+            originalPrice = variant.discountedPrice != null ? variant.price : null;
+          }
+        }
+
+        return {
+          productId: product._id,
+          name: product.name,
+          price: effectivePrice,
+          originalPrice,
+          image: product.image,
+          quantity: Number(item.quantity),
+          variantId,
+          variantLabel,
+          unit,
+        };
+      })
+    );
+
+    const totalAmount = parseFloat(orderItems.reduce((sum, i) => sum + i.price * i.quantity, 0).toFixed(2));
+
+    // Validate subscription if using ledger payment
+    if (paymentMode === "subscription_ledger") {
+      const subscription = await Subscription.findById(subscriptionId);
+      if (!subscription) return res.status(404).json({ message: "Subscription not found." });
+      if (subscription.status !== "active") return res.status(409).json({ message: "Subscription is no longer active." });
+      if (subscription.userId.toString() !== String(customerId)) {
+        return res.status(403).json({ message: "Subscription does not belong to this customer." });
+      }
+    }
+
+    // Resolve customer address and area
+    const customer = await User.findById(customerId).select("addresses assignedArea");
+    if (!customer) return res.status(404).json({ message: "Customer not found." });
+    const savedAddr = customer.addresses?.find((a) => a.isDefault) || customer.addresses?.[0];
+    const address = savedAddr
+      ? { street: savedAddr.street || "On-demand", city: savedAddr.city || "-", pincode: String(savedAddr.pincode || "000000"), state: savedAddr.state || "-" }
+      : { street: "On-demand", city: "-", pincode: "000000", state: "-" };
+
+    const deliveredAt = date ? new Date(date) : new Date();
+
+    const areaId = customer.assignedArea
+      ? String(customer.assignedArea._id || customer.assignedArea)
+      : null;
+
+    const newOrder = new Order({
+      userId: customerId,
+      items: orderItems,
+      address,
+      totalAmount,
+      paymentMethod: "COD",
+      paymentStatus: paymentMode === "pay_at_delivery" ? "paid" : "pending",
+      orderStatus: "delivered",
+      deliveredAt,
+      paymentMode,
+      areaId,
+      linkedSubscriptionId: paymentMode === "subscription_ledger" ? subscriptionId : null,
+      deliveryAttempts: [{ status: "delivered", notes: notes || null, handledBy: req.user?._id || null }],
+    });
+
+    // Build stock decrement ops
+    const stockOps = orderItems.map((item) => {
+      if (item.variantId) {
+        return { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": -item.quantity } } } };
+      }
+      return { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: -item.quantity } } } };
+    });
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await newOrder.save({ session });
+        await Product.bulkWrite(stockOps, { session });
+        await User.findByIdAndUpdate(customerId, { $inc: { accountBalance: totalAmount } }, { session });
+        if (paymentMode === "subscription_ledger") {
+          await Subscription.findByIdAndUpdate(subscriptionId, { $inc: { pendingAmount: totalAmount } }, { session });
+        }
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    res.status(201).json({ message: "Instant delivery recorded successfully.", order: newOrder });
+  } catch (error) {
+    console.error("Create Instant Delivery Error:", error);
+    res.status(500).json({ message: error.message || "Failed to record instant delivery." });
+  }
+};
+
 export const updateOrderStatus = async (req, res) => {
     try {
         const { id } = req.params;

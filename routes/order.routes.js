@@ -2,6 +2,7 @@ import express from "express";
 import {
   createOrder,
   createOrderAdmin,
+  createInstantDelivery,
   updateOrderAdmin,
   getUserOrders,
   getOrderById,
@@ -22,6 +23,7 @@ router.get("/admin/:id", authMiddleware, adminOnly, getOrderByIdAdmin);
 router.post("/admin/:id/delivery-outcome", authMiddleware, deliveryPartnerOrAdmin, recordOrderDeliveryOutcome);
 router.put("/admin/:id/status", authMiddleware, deliveryPartnerOrAdmin, updateOrderStatus);
 router.post("/admin/create", authMiddleware, adminOnly, createOrderAdmin);
+router.post("/admin/instant-delivery", authMiddleware, adminOnly, createInstantDelivery);
 router.put("/admin/:id", authMiddleware, adminOnly, updateOrderAdmin);
 
 // User routes

@@ -501,6 +501,7 @@ export const getDeliveryBoard = async (req, res) => {
                     address: null,
                     lat: subLat,
                     lng: subLng,
+                    productId: String(subscription.productId?._id || subscription.productId || ""),
                     productLabel: label,
                     quantity: subscription.quantityPerDay,
                     unit: effectiveUnit,
@@ -551,9 +552,12 @@ export const getDeliveryBoard = async (req, res) => {
                     : "Address not available",
                 lat: orderLat,
                 lng: orderLng,
-                productLabel: `${order.items.length} item(s)`,
+                productId: String(order.items[0]?.productId?._id || order.items[0]?.productId || ""),
+                productLabel: order.items.length === 1
+                    ? order.items[0].name
+                    : order.items.map((i) => `${i.name} ×${i.quantity}`).join(", "),
                 quantity: order.items.reduce((sum, item) => sum + (item.quantity || 0), 0),
-                unit: "items",
+                unit: order.items.length === 1 ? (order.items[0].unit || "item") : "items",
                 amount: order.totalAmount || 0,
                 schedule: "one-time",
                 status: order.orderStatus,
