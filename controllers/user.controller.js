@@ -108,7 +108,8 @@ export const registerUser = async (req, res) => {
         console.error(error);
         if (error.code === 11000) {
             const field = Object.keys(error.keyPattern || {})[0];
-            if (field === "email") return res.status(409).json({ message: "An account with this email already exists!" });
+            const value = error.keyValue?.[field];
+            if (field === "email" && value != null) return res.status(409).json({ message: "An account with this email already exists!" });
             if (field === "phone") return res.status(409).json({ message: "An account with this phone number already exists!" });
         }
         res.status(500).json({ message: 'Server error, please try again later.' })
@@ -182,9 +183,9 @@ export const createUserAdmin = async (req, res) => {
     console.error("Create User Admin Error:", error);
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern || {})[0];
-      if (field === "email") return res.status(409).json({ message: "An account with this email already exists!" });
+      const value = error.keyValue?.[field];
+      if (field === "email" && value != null) return res.status(409).json({ message: "An account with this email already exists!" });
       if (field === "phone") return res.status(409).json({ message: "An account with this phone number already exists!" });
-      return res.status(409).json({ message: "A user with these details already exists!" });
     }
     res.status(500).json({ message: "Server error, please try again later." });
   }
@@ -472,9 +473,9 @@ export const updateUserAdmin = async (req, res) => {
     console.error("Update User Admin Error:", error);
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern || {})[0];
-      if (field === "email") return res.status(409).json({ message: "Email is already in use by another account." });
+      const value = error.keyValue?.[field];
+      if (field === "email" && value != null) return res.status(409).json({ message: "Email is already in use by another account." });
       if (field === "phone") return res.status(409).json({ message: "Phone number is already in use by another account." });
-      return res.status(409).json({ message: "A user with these details already exists." });
     }
     res.status(500).json({ message: "Server error" });
   }

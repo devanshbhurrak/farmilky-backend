@@ -46,10 +46,32 @@ const runStartupManifestGeneration = () => {
         console.error("Startup manifest generation failed:", error);
     });
 };
+// One-time migration: ensure email_1 index on users collection is sparse.
+// The old index (created before sparse:true was added to the schema) treats null as a
+// unique value, blocking multiple users without an email address. Dropping it lets
+// Mongoose rebuild it as sparse via autoIndex.
+const ensureSparseEmailIndex = async () => {
+    try {
+        const coll = mongoose.connection.collection("users");
+        const indexes = await coll.indexes();
+        const emailIdx = indexes.find((i) => i.name === "email_1");
+        if (emailIdx && !emailIdx.sparse) {
+            await coll.dropIndex("email_1");
+            console.log("[migration] Dropped non-sparse email_1 index — Mongoose will rebuild as sparse.");
+        }
+    } catch (err) {
+        console.warn("[migration] email_1 index check failed (non-fatal):", err.message);
+    }
+};
+
 if (mongoose.connection.readyState === 1) {
+    ensureSparseEmailIndex();
     runStartupManifestGeneration();
 } else {
-    mongoose.connection.once("open", runStartupManifestGeneration);
+    mongoose.connection.once("open", () => {
+        ensureSparseEmailIndex();
+        runStartupManifestGeneration();
+    });
 }
 
 if (process.env.ENABLE_LOCAL_SCHEDULER === "true" && process.env.NODE_ENV !== "production") {
