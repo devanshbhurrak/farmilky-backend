@@ -5,6 +5,7 @@ import User from "../models/user.model.js";
 export const recordPaymentAdmin = async (req, res) => {
     try {
         const { userId, amount, transactionId, notes, date, type = "payment" } = req.body;
+        const role = req.user?.role;
 
         const parsedAmount = Number(amount);
         if (!userId || !amount || isNaN(parsedAmount) || parsedAmount <= 0) {
@@ -14,6 +15,11 @@ export const recordPaymentAdmin = async (req, res) => {
         const validTypes = ["payment", "credit_adjustment", "debit_adjustment"];
         if (!validTypes.includes(type)) {
             return res.status(400).json({ message: "Invalid adjustment type." });
+        }
+
+        // Delivery partners may only collect payments, not create balance adjustments.
+        if (role !== "admin" && type !== "payment") {
+            return res.status(403).json({ message: "Delivery partners can only record payments." });
         }
 
         const payment = new Payment({
