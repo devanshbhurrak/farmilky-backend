@@ -15,6 +15,10 @@ const areaSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    sequence: {
+      type: Number,
+      default: 0,
+    },
     isActive: {
       type: Boolean,
       default: true,

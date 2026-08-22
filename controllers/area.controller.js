@@ -4,9 +4,9 @@ import User from "../models/user.model.js";
 
 export const createArea = async (req, res) => {
   try {
-    const { name, pincodes, localities, assignedAgent } = req.body;
+    const { name, pincodes, localities, assignedAgent, sequence } = req.body;
     if (!name) return res.status(400).json({ message: "Area name is required." });
-    const area = await Area.create({ name, pincodes: pincodes || [], localities: localities || [], assignedAgent: assignedAgent || null });
+    const area = await Area.create({ name, pincodes: pincodes || [], localities: localities || [], assignedAgent: assignedAgent || null, sequence: sequence ?? 0 });
     if (assignedAgent) {
       await User.findByIdAndUpdate(assignedAgent, {
         assignedArea: area._id,
@@ -23,7 +23,7 @@ export const createArea = async (req, res) => {
 
 export const getAllAreas = async (req, res) => {
   try {
-    const areas = await Area.find().populate("assignedAgent", "name email phone").sort({ name: 1 });
+    const areas = await Area.find().populate("assignedAgent", "name email phone").sort({ sequence: 1, name: 1 });
     res.status(200).json({ count: areas.length, areas });
   } catch (error) {
     console.error("Get Areas Error:", error);
@@ -44,7 +44,7 @@ export const getAreaById = async (req, res) => {
 
 export const updateArea = async (req, res) => {
   try {
-    const { name, pincodes, localities, assignedAgent, isActive } = req.body;
+    const { name, pincodes, localities, assignedAgent, isActive, sequence } = req.body;
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
 
@@ -52,6 +52,7 @@ export const updateArea = async (req, res) => {
     if (pincodes !== undefined) area.pincodes = pincodes;
     if (localities !== undefined) area.localities = localities;
     if (isActive !== undefined) area.isActive = isActive;
+    if (sequence !== undefined) area.sequence = sequence;
 
     if (assignedAgent !== undefined) {
       const prevAgent = area.assignedAgent;
