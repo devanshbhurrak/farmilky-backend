@@ -64,7 +64,7 @@ The backend service handles API requests from the frontend and the management po
 ```text
 backend/
 ├── config/
-│   ├── db.js                  # MongoDB connection logic
+│   ├── db.js                  # MongoDB connection
 │   └── env.js                 # env validation + CORS origin parsing
 ├── controllers/               # Route handlers per domain
 │   ├── admin.controller.js
