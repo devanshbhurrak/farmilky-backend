@@ -1,6 +1,7 @@
 import express from 'express'
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { adminOnly, deliveryPartnerOrAdmin } from '../middleware/adminMiddleware.js';
+import { requirePermission } from '../middleware/permissionMiddleware.js';
 import {
   cancelSubscription,
   createSubscription,
@@ -33,10 +34,10 @@ const router = express.Router();
 
 router.get('/admin/all', authMiddleware, adminOnly, getAllSubscriptions);
 router.get('/admin/today-supply', authMiddleware, adminOnly, getTodaySupply);
-router.get('/admin/delivery-board', authMiddleware, deliveryPartnerOrAdmin, getDeliveryBoard);
-router.get('/admin/user/:userId/active', authMiddleware, deliveryPartnerOrAdmin, getActiveSubscriptionsByUser);
-router.post('/admin/:id/delivery-outcome', authMiddleware, deliveryPartnerOrAdmin, recordSubscriptionDeliveryOutcome);
-router.post('/admin/:id/mark-delivered', authMiddleware, deliveryPartnerOrAdmin, markSubscriptionDeliveredToday);
+router.get('/admin/delivery-board',       authMiddleware, deliveryPartnerOrAdmin, requirePermission("delivery_board.view"), getDeliveryBoard);
+router.get('/admin/user/:userId/active',  authMiddleware, deliveryPartnerOrAdmin, requirePermission("customer.view_basic"), getActiveSubscriptionsByUser);
+router.post('/admin/:id/delivery-outcome', authMiddleware, deliveryPartnerOrAdmin, requirePermission("delivery_board.view"), recordSubscriptionDeliveryOutcome);
+router.post('/admin/:id/mark-delivered',   authMiddleware, deliveryPartnerOrAdmin, requirePermission("manifest.update"),     markSubscriptionDeliveredToday);
 router.get('/admin/:id', authMiddleware, adminOnly, getSubscriptionByIdAdmin);
 router.put('/admin/:id/status', authMiddleware, adminOnly, updateSubscriptionStatus);
 router.post('/admin/create', authMiddleware, adminOnly, createSubscriptionAdmin);

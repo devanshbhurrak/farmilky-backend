@@ -1,12 +1,13 @@
 import express from "express";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { adminOnly, deliveryPartnerOrAdmin } from "../middleware/adminMiddleware.js";
+import { requirePermission } from "../middleware/permissionMiddleware.js";
 import { createArea, getAllAreas, getAreaById, updateArea, deleteArea, getDeliveryAgents, getAreaCustomers, updateAreaCustomers } from "../controllers/area.controller.js";
 
 const router = express.Router();
 
 router.get("/agents", authMiddleware, adminOnly, getDeliveryAgents);
-router.get("/", authMiddleware, deliveryPartnerOrAdmin, getAllAreas);
+router.get("/", authMiddleware, deliveryPartnerOrAdmin, requirePermission("area.view"), getAllAreas);
 router.post("/", authMiddleware, adminOnly, createArea);
 router.get("/:id", authMiddleware, adminOnly, getAreaById);
 router.put("/:id", authMiddleware, adminOnly, updateArea);

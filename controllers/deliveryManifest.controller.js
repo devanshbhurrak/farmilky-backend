@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Subscription from "../models/subscription.model.js";
 import Order from "../models/order.model.js";
+import User from "../models/user.model.js";
 import { calculateNextDeliveryDate, getHolidayDateSet } from "../services/scheduler.js";
 import { generateManifestsForDate } from "../services/manifestService.js";
 
