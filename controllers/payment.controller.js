@@ -50,6 +50,13 @@ export const recordPaymentAdmin = async (req, res) => {
 
         const message = type === "payment" ? "Payment recorded successfully." : "Adjustment recorded successfully.";
         res.status(201).json({ message, payment });
+
+        // Async sync — non-blocking, non-critical
+        import("../services/invoiceService.js").then(({ syncInvoiceStatusAfterPayment }) => {
+            syncInvoiceStatusAfterPayment(userId).catch((err) => {
+                console.error("[Payment] Invoice sync failed:", err.message);
+            });
+        });
     } catch (error) {
         console.error("Record Payment Error:", error);
         res.status(500).json({ message: "Failed to record payment." });
@@ -78,6 +85,14 @@ export const deletePaymentAdmin = async (req, res) => {
         }
 
         res.status(200).json({ message: "Entry deleted and balance reverted." });
+
+        // Async sync — recompute invoice status now that payment is gone
+        const deletedUserId = payment.userId.toString();
+        import("../services/invoiceService.js").then(({ syncInvoiceStatusAfterPayment }) => {
+            syncInvoiceStatusAfterPayment(deletedUserId).catch((err) => {
+                console.error("[Payment] Invoice sync after delete failed:", err.message);
+            });
+        });
     } catch (error) {
         console.error("Delete Payment Error:", error);
         res.status(500).json({ message: "Failed to delete payment." });

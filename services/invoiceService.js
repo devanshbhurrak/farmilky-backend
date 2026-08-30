@@ -306,10 +306,11 @@ export async function generateBulkInvoices(month, year, options = {}) {
  */
 export async function syncInvoiceStatusAfterPayment(userId) {
   try {
-    // Find the most recent non-void, non-paid invoice for this user
+    // Find the most recent non-void invoice for this user (include paid so
+    // payment deletions can downgrade a "paid" invoice back to draft)
     const invoice = await Invoice.findOne({
       userId,
-      status: { $nin: ["void", "paid", "cancelled"] },
+      status: { $nin: ["void", "cancelled"] },
     }).sort({ "billingPeriod.year": -1, "billingPeriod.month": -1 });
 
     if (!invoice) return;
@@ -337,9 +338,14 @@ export async function syncInvoiceStatusAfterPayment(userId) {
 
     if (newNet <= 0) {
       invoice.status = "paid";
-      invoice.paidAt = new Date();
+      if (!invoice.paidAt) invoice.paidAt = new Date();
     } else if (totalPayments > 0) {
       invoice.status = "partially_paid";
+      invoice.paidAt = null; // clear paidAt if it was set prematurely
+    } else {
+      // No payments remain (e.g. payment was deleted) — revert to draft
+      invoice.status = "draft";
+      invoice.paidAt = undefined;
     }
 
     await invoice.save();
