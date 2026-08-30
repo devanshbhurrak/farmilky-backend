@@ -280,6 +280,24 @@ const initScheduler = () => {
       console.error("Daily manifest generation job failed:", error);
     }
   });
+
+  // Monthly invoice generation: 1 AM on the 1st of every month (generates previous month's invoices)
+  cron.schedule("0 1 1 * *", async () => {
+    console.log("[Scheduler] Running monthly invoice generation...");
+    const now = new Date();
+    let month = now.getMonth(); // previous month (1-indexed)
+    let year = now.getFullYear();
+    if (month === 0) { month = 12; year -= 1; }
+    try {
+      const { generateBulkInvoices, markOverdueInvoices } = await import("./invoiceService.js");
+      const { marked } = await markOverdueInvoices();
+      if (marked > 0) console.log(`[Scheduler] Marked ${marked} invoices as overdue.`);
+      const results = await generateBulkInvoices(month, year, { generatedBy: "system" });
+      console.log(`[Scheduler] Monthly invoices: ${results.generated} generated, ${results.skipped} skipped, ${results.errors.length} errors.`);
+    } catch (err) {
+      console.error("[Scheduler] Monthly invoice generation failed:", err);
+    }
+  });
 };
 
 export default initScheduler;

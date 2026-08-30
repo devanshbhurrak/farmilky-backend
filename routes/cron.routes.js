@@ -2,6 +2,7 @@ import express from "express";
 import {
   runDailyDeliveryCron,
   runEndOfDayCron,
+  runMonthlyInvoiceCron,
 } from "../controllers/cron.controller.js";
 
 const router = express.Router();
@@ -17,5 +18,6 @@ const cronAuth = (req, res, next) => {
 
 router.post("/daily-delivery", cronAuth, runDailyDeliveryCron);
 router.post("/end-of-day", cronAuth, runEndOfDayCron);
+router.post("/monthly-invoice", cronAuth, runMonthlyInvoiceCron);
 
 export default router;

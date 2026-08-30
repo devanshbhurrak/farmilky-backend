@@ -34,6 +34,28 @@ export const runDailyDeliveryCron = async (req, res) => {
   }
 };
 
+export const runMonthlyInvoiceCron = async (req, res) => {
+  try {
+    if (!isAuthorizedCronRequest(req)) {
+      return res.status(401).json({ message: "Unauthorized cron request" });
+    }
+    // Generate invoices for the previous month
+    const now = new Date();
+    let month = now.getMonth(); // 0-indexed, so this is previous month (1-indexed)
+    let year = now.getFullYear();
+    if (month === 0) { month = 12; year -= 1; }
+
+    const { generateBulkInvoices, markOverdueInvoices } = await import("../services/invoiceService.js");
+    // Mark prior-month unpaid invoices as overdue before generating new ones
+    const overdueResult = await markOverdueInvoices();
+    const results = await generateBulkInvoices(month, year, { generatedBy: "system" });
+    return res.status(200).json({ message: "Monthly invoice cron complete", ...results, overdue: overdueResult.marked });
+  } catch (error) {
+    console.error("Monthly invoice cron failed:", error);
+    return res.status(500).json({ message: "Monthly invoice cron failed" });
+  }
+};
+
 export const runEndOfDayCron = async (req, res) => {
   try {
     if (!isAuthorizedCronRequest(req)) {
