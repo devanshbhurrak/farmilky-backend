@@ -199,14 +199,21 @@ export const sendInvoiceWhatsApp = async (req, res) => {
 // ── Admin: Download PDF ──────────────────────────────────────────────────
 export const downloadInvoicePDF = async (req, res) => {
   try {
-    const { detailed = "false" } = req.query;
+    const { detailed = "false", upiId, upiName, phone } = req.query;
     const invoice = await Invoice.findById(req.params.id)
       .populate("userId", "name phone email")
       .lean();
 
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    const pdfBuffer = await generateInvoicePDF(invoice, { detailed: detailed === "true" });
+    const pdfBuffer = await generateInvoicePDF(invoice, {
+      detailed: detailed === "true",
+      // Frontend passes its VITE_UPI_ID so the PDF shows QR/UPI even when
+      // the backend UPI_ID env var is not set separately.
+      ...(upiId   ? { upiId }   : {}),
+      ...(upiName ? { upiName } : {}),
+      ...(phone   ? { phone }   : {}),
+    });
 
     res.set({
       "Content-Type": "application/pdf",
@@ -256,9 +263,48 @@ export const getMyInvoiceDetail = async (req, res) => {
     }).lean();
 
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-    res.json({ invoice });
+
+    // Include brand payment config so the portal can show payment options
+    // Fallbacks must match pdfService.js so portal and PDF show the same info
+    const brandConfig = {
+      phone:   process.env.BRAND_PHONE || "9244237975",
+      upiId:   process.env.UPI_ID      || "",
+      upiName: process.env.UPI_NAME    || "Farmilky",
+    };
+
+    res.json({ invoice, brandConfig });
   } catch (err) {
     console.error("getMyInvoiceDetail:", err);
     res.status(500).json({ message: "Failed to fetch invoice" });
+  }
+};
+
+// ── Customer: Download my invoice PDF ───────────────────────────────────
+export const downloadMyInvoicePDF = async (req, res) => {
+  try {
+    const { detailed = "false" } = req.query;
+    const invoice = await Invoice.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+      status: { $ne: "void" },
+    })
+      .populate("userId", "name phone email")
+      .lean();
+
+    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+    const pdfBuffer = await generateInvoicePDF(invoice, {
+      detailed: detailed === "true",
+    });
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${invoice.invoiceNumber}.pdf"`,
+      "Content-Length": pdfBuffer.length,
+    });
+    res.end(pdfBuffer);
+  } catch (err) {
+    console.error("downloadMyInvoicePDF:", err);
+    res.status(500).json({ message: "Failed to generate PDF" });
   }
 };

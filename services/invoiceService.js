@@ -341,7 +341,7 @@ export async function syncInvoiceStatusAfterPayment(userId) {
       if (!invoice.paidAt) invoice.paidAt = new Date();
     } else if (totalPayments > 0) {
       invoice.status = "partially_paid";
-      invoice.paidAt = null; // clear paidAt if it was set prematurely
+      invoice.paidAt = undefined; // clear paidAt if it was set prematurely
     } else {
       // No payments remain (e.g. payment was deleted) — revert to draft
       invoice.status = "draft";

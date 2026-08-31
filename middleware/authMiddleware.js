@@ -22,6 +22,6 @@ export const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ message: "Token expired. Please login again." });
     }
     console.error("Auth Middleware Error:", error);
-    res.status(401).json({ message: "Unauthorized or invalid token." });
+    return res.status(401).json({ message: "Unauthorized or invalid token." });
   }
 };

@@ -70,8 +70,12 @@ const invoiceSchema = new mongoose.Schema({
   optimisticConcurrency: true,
 });
 
-// Compound index: one non-void invoice per customer per month
-invoiceSchema.index({ userId: 1, "billingPeriod.year": 1, "billingPeriod.month": 1 });
+// Compound index: one non-void invoice per customer per month (enforced at DB level to prevent race duplicates)
+// Uses partial index so voided invoices don't block regeneration
+invoiceSchema.index(
+  { userId: 1, "billingPeriod.year": 1, "billingPeriod.month": 1 },
+  { unique: true, partialFilterExpression: { status: { $ne: "void" } } }
+);
 invoiceSchema.index({ status: 1 });
 invoiceSchema.index({ "billingPeriod.year": 1, "billingPeriod.month": 1 });
 // invoiceNumber uniqueness is enforced by the field-level `unique: true` — no separate index needed

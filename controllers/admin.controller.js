@@ -67,7 +67,7 @@ export const getAdminStats = async (req, res) => {
 
 export const getDeliveryPerformance = async (req, res) => {
   try {
-    const days = parseInt(req.query.days || "7", 10);
+    const days = Math.max(1, Math.min(90, parseInt(req.query.days || "7", 10)));
     const since = new Date();
     since.setDate(since.getDate() - days);
     since.setHours(0, 0, 0, 0);
