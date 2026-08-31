@@ -712,17 +712,23 @@ export async function generateInvoicePDF(invoice, {
       // Works in all mobile PDF viewers because https:// opens in browser,
       // which then bounces to upi:// and launches the UPI app chooser.
       if (tapLink) {
-        const tapW = Math.min(pillW, 200);
-        const tapH = 22;
-        // Filled green button
-        doc.save().roundedRect(MID_L, midY, tapW, tapH, 11)
+        // Large filled button — sized for finger tapping on mobile
+        const tapW = MID_W;   // full column width
+        const tapH = 28;
+        const tapR = 6;
+        // Shadow illusion: slightly darker rect behind
+        doc.save().roundedRect(MID_L + 1, midY + 2, tapW, tapH, tapR)
+          .fill("#0f2e1e").restore();
+        // Main button fill
+        doc.save().roundedRect(MID_L, midY, tapW, tapH, tapR)
           .fill(C.green).restore();
-        doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(7.6)
-          .text("Tap here to pay via UPI  \u2192", MID_L, midY + 6.5,
+        // Label
+        doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(9)
+          .text("Pay via UPI  \u2192", MID_L, midY + 9.5,
             { width: tapW, align: "center", lineBreak: false });
-        // Full-area link annotation (https:// → server 302 → upi://)
+        // Link annotation covers the entire button area
         doc.link(MID_L, midY, tapW, tapH, tapLink);
-        midY += tapH + 9;
+        midY += tapH + 10;
       }
 
       // Confirmation note
