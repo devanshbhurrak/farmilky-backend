@@ -137,17 +137,27 @@ export async function generateInvoicePDF(invoice, {
   const effectiveUpiName = (upiName || BRAND.upiName).trim();
   const effectivePhone   = (phone   || BRAND.phone).trim();
 
-  // Build UPI deep-link if amount is due and UPI ID is configured
-  let upiUri = null;
+  // Build UPI deep-link if amount is due and UPI ID is configured.
+  // upiUri  → used for QR code (upi:// scheme, scanned by camera/UPI app).
+  // tapLink → https:// redirect via backend /pay/upi so that PDF tap button
+  //           opens in the mobile browser which then bounces to upi://.
+  //           (PDF viewers block custom URI schemes; https:// always works.)
+  let upiUri  = null;
+  let tapLink = null;
   if (effectiveUpiId && (invoice.netAmountDue ?? 0) > 0) {
-    upiUri = [
-      "upi://pay",
-      `?pa=${encodeURIComponent(effectiveUpiId)}`,
-      `&pn=${encodeURIComponent(effectiveUpiName)}`,
-      `&am=${Number(invoice.netAmountDue).toFixed(2)}`,
-      "&cu=INR",
-      `&tn=${encodeURIComponent(`Farmilky Invoice ${invoice.invoiceNumber}`)}`,
-    ].join("");
+    const upiParams = new URLSearchParams({
+      pa: effectiveUpiId,
+      pn: effectiveUpiName,
+      am: Number(invoice.netAmountDue).toFixed(2),
+      cu: "INR",
+      tn: `Farmilky Invoice ${invoice.invoiceNumber}`,
+    });
+    upiUri = `upi://pay?${upiParams.toString()}`;
+
+    const backendUrl = (process.env.BACKEND_URL || "").replace(/\/$/, "");
+    if (backendUrl) {
+      tapLink = `${backendUrl}/pay/upi?${upiParams.toString()}`;
+    }
   }
 
   // Generate QR PNG buffer
@@ -698,22 +708,24 @@ export async function generateInvoicePDF(invoice, {
           { width: upiValW, lineBreak: false });
       midY += pillH + 9;
 
-      // Tap-to-pay pill button — mirrors .inv-payment-tap-link
-      if (upiUri) {
-        const tapW = Math.min(pillW, 190);
-        const tapH = 20;
-        doc.save().roundedRect(MID_L, midY, tapW, tapH, 10)
-          .strokeColor(C.greenBorder).lineWidth(0.8).stroke().restore();
-        doc.fillColor(C.green).font("Helvetica-Bold").fontSize(7.4)
-          .text("Tap here to open UPI app  \u2192", MID_L, midY + 5.5,
+      // Tap-to-pay button — links to https:// backend redirect → upi://
+      // Works in all mobile PDF viewers because https:// opens in browser,
+      // which then bounces to upi:// and launches the UPI app chooser.
+      if (tapLink) {
+        const tapW = Math.min(pillW, 200);
+        const tapH = 22;
+        // Filled green button
+        doc.save().roundedRect(MID_L, midY, tapW, tapH, 11)
+          .fill(C.green).restore();
+        doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(7.6)
+          .text("Tap here to pay via UPI  \u2192", MID_L, midY + 6.5,
             { width: tapW, align: "center", lineBreak: false });
-        // Cover the full button area with a clickable link annotation so the
-        // entire pill — not just the text — is tappable on Android PDF viewers.
-        doc.link(MID_L, midY, tapW, tapH, upiUri);
+        // Full-area link annotation (https:// → server 302 → upi://)
+        doc.link(MID_L, midY, tapW, tapH, tapLink);
         midY += tapH + 9;
       }
 
-      // Confirmation note — mirrors .inv-payment-note (italic, muted)
+      // Confirmation note
       const payNote = "After payment, share a screenshot as confirmation. Dhanyavaad!";
       doc.fillColor(C.muted).font("Helvetica-Oblique").fontSize(7)
         .text(payNote, MID_L, midY, { width: MID_W });
