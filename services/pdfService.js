@@ -155,9 +155,11 @@ export async function generateInvoicePDF(invoice, {
     upiUri = `upi://pay?${upiParams.toString()}`;
 
     const backendUrl = (process.env.BACKEND_URL || "").replace(/\/$/, "");
-    if (backendUrl) {
-      tapLink = `${backendUrl}/pay/upi?${upiParams.toString()}`;
-    }
+    // Prefer https redirect (works in all PDF viewers on mobile).
+    // Fall back to upi:// directly — works in Adobe Acrobat & some viewers.
+    tapLink = backendUrl
+      ? `${backendUrl}/pay/upi?${upiParams.toString()}`
+      : upiUri;
   }
 
   // Generate QR PNG buffer
