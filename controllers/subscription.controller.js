@@ -859,6 +859,109 @@ export const markSubscriptionDeliveredToday = async (req, res) => {
     }
 };
 
+export const deleteDeliveryHistoryEntry = async (req, res) => {
+  try {
+    const { id, deliveryId } = req.params;
+
+    const subscription = await Subscription.findById(id)
+      .populate("userId", "name email phone")
+      .populate("productId", "name unit image price category");
+
+    if (!subscription) {
+      return res.status(404).json({ message: "Subscription not found" });
+    }
+
+    const entryIndex = subscription.deliveryHistory.findIndex(
+      (e) => String(e._id) === String(deliveryId)
+    );
+
+    if (entryIndex === -1) {
+      return res.status(404).json({ message: "Delivery record not found" });
+    }
+
+    const entry = subscription.deliveryHistory[entryIndex];
+    const amountToReverse = entry.totalAmount || 0;
+
+    // Determine if deleting this entry should roll back nextDeliveryDate.
+    // Only entries recorded for a non-backdated (present/future) date
+    // would have advanced nextDeliveryDate. We detect this by checking if
+    // the entry's date is the most recent delivery date in history.
+    const entryDate = normalizeDay(getDeliveryEntryDate(entry));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find what the new nextDeliveryDate should be after removal
+    const remainingHistory = subscription.deliveryHistory.filter(
+      (_, i) => i !== entryIndex
+    );
+
+    // Recalculate nextDeliveryDate if the deleted entry was at or after today
+    // (meaning it may have advanced the schedule forward)
+    let newNextDeliveryDate = subscription.nextDeliveryDate;
+    if (entryDate.getTime() >= today.getTime()) {
+      // Fetch holidays once for this entire recalculation block
+      const holidayDates = await getHolidayDateSet();
+      if (remainingHistory.length > 0) {
+        // Find the latest remaining delivery date at or after startDate
+        const latestRemaining = remainingHistory
+          .map((e) => normalizeDay(getDeliveryEntryDate(e)))
+          .filter((d) => d.getTime() >= normalizeDay(subscription.startDate).getTime())
+          .sort((a, b) => b - a)[0];
+        if (latestRemaining) {
+          newNextDeliveryDate = calculateNextDeliveryDate(subscription, latestRemaining, holidayDates);
+        } else {
+          // All remaining entries are before startDate — treat as no history
+          newNextDeliveryDate = normalizeDay(subscription.startDate);
+        }
+      } else {
+        // No history left at all — reset to startDate so the subscription
+        // remains due from the beginning. calculateNextDeliveryDate always
+        // advances at least one interval, so we assign startDate directly
+        // rather than calling it (which would skip the start date itself).
+        newNextDeliveryDate = normalizeDay(subscription.startDate);
+      }
+    }
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await Subscription.findByIdAndUpdate(
+          subscription._id,
+          {
+            $pull: { deliveryHistory: { _id: entry._id } },
+            $inc: { pendingAmount: -amountToReverse },
+            $set: { nextDeliveryDate: newNextDeliveryDate },
+          },
+          { session }
+        );
+        if (amountToReverse !== 0) {
+          await User.findByIdAndUpdate(
+            subscription.userId._id || subscription.userId,
+            { $inc: { accountBalance: -amountToReverse } },
+            { session }
+          );
+        }
+      });
+
+      const updated = await Subscription.findById(subscription._id)
+        .populate("userId", "name email phone")
+        .populate("productId", "name unit image price category");
+
+      return res.status(200).json({
+        message: "Delivery record deleted and balances adjusted.",
+        subscription: updated,
+        reversed: amountToReverse,
+        pendingAmount: updated.pendingAmount,
+      });
+    } finally {
+      await session.endSession();
+    }
+  } catch (error) {
+    console.error("Delete Delivery History Entry Error:", error);
+    return res.status(500).json({ message: "Failed to delete delivery record." });
+  }
+};
+
 export const updateSubscriptionAdmin = async (req, res) => {
   try {
     const { id } = req.params;

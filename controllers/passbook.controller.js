@@ -18,14 +18,16 @@ export const getCustomerPassbook = async (req, res) => {
     
     const deliveryEntries = [];
     subscriptions.forEach(sub => {
-      sub.deliveryHistory.forEach(entry => {
+      (sub.deliveryHistory || []).forEach(entry => {
         if (["delivered", "extra", "partial"].includes(entry.status)) {
           deliveryEntries.push({
             date: entry.deliveryDate || entry.date,
             type: "debit",
             amount: entry.totalAmount,
             description: `${sub.productId?.name || "Product"} Delivery`,
-            notes: `${entry.status}${entry.notes ? ` - ${entry.notes}` : ""}`,
+            notes: entry.notes || "",
+            qty: entry.actualQuantity ?? entry.quantityDelivered ?? entry.scheduledQuantity ?? null,
+            unit: sub.productId?.unit || "",
             referenceId: sub._id,
             category: "Subscription"
           });
@@ -45,7 +47,7 @@ export const getCustomerPassbook = async (req, res) => {
         type: "debit",
         amount: order.totalAmount,
         description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
-        notes: order.items.map(i => `${i.name} x${i.quantity}`).join(", "),
+        notes: order.items?.map(i => `${i.name} x${i.quantity}`).join(", ") || "",
         referenceId: order._id,
         category: "Order",
         paymentMode: order.paymentMode || "pay_at_delivery",
