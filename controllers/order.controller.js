@@ -313,6 +313,8 @@ export const createOrder = async (req, res) => {
             if (item.variantId && product.variants?.length > 0) {
                 const variant = product.variants.id(item.variantId);
                 if (variant) {
+                    if (!variant.isAvailable || variant.stock <= 0)
+                        throw new Error(`${product.name} (${variant.label}) is currently unavailable`);
                     effectivePrice = variant.discountedPrice ?? variant.price;
                     variantId = variant._id;
                     variantLabel = item.variantLabel;

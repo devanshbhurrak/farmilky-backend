@@ -398,7 +398,8 @@ export const updateCollection = async (req, res) => {
   }
 };
 
-// Today's shift summary — returns confirmed qty + amount split by session
+// Today's shift summary — returns confirmed qty + amount split by session.
+// qty = sum of actualQty for confirmed entries (matches collection page totalLiters).
 export const getTodayShiftSummary = async (req, res) => {
   try {
     const today = toUTCMidnight(new Date());

@@ -20,16 +20,40 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
 
   // 1. Subscriptions → Delivery line items
   const subscriptions = await Subscription.find({ userId })
-    .populate("productId", "name unit")
+    .populate("productId", "name unit variants")
     .lean();
 
   const deliveryEntries = [];
   subscriptions.forEach((sub) => {
+    // Find the variant to get its actual volume/quantity value (e.g., 0.5 for "0.5L")
+    const variant = sub.variantId
+      ? sub.productId?.variants?.find(
+          (v) => v._id.toString() === sub.variantId.toString()
+        )
+      : null;
+    // variantVolume: how many base units (L, kg, etc.) each ordered "unit" represents
+    // e.g., for a "0.5L" variant, variantVolume = 0.5
+    const variantVolume = variant?.quantity ?? 1;
+
     (sub.deliveryHistory || []).forEach((entry) => {
       if (!["delivered", "extra", "partial"].includes(entry.status)) return;
       const entryDate = new Date(entry.deliveryDate || entry.date);
       if (startDate && entryDate < startDate) return;
       if (endDate && entryDate > endDate) return;
+
+      // deliveredUnits: number of bottles/packets delivered
+      const deliveredUnits =
+        entry.actualQuantity ?? entry.quantityDelivered ?? entry.scheduledQuantity;
+      // actualVolume: real quantity in the product's base unit (L, kg, etc.)
+      const actualVolume =
+        variantVolume !== 1
+          ? Math.round(deliveredUnits * variantVolume * 1000) / 1000
+          : deliveredUnits;
+      // pricePerBaseUnit: e.g., ₹25/bottle ÷ 0.5L = ₹50/L
+      const pricePerBaseUnit =
+        entry.pricePerUnit != null && variantVolume !== 1
+          ? Math.round((entry.pricePerUnit / variantVolume) * 100) / 100
+          : entry.pricePerUnit;
 
       deliveryEntries.push({
         date: entryDate,
@@ -43,9 +67,9 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
         productId: sub.productId?._id,
         productName: sub.productId?.name,
         variantLabel: sub.variantLabel,
-        unit: sub.productId?.unit || sub.variantUnit,
-        quantity: entry.actualQuantity ?? entry.quantityDelivered ?? entry.scheduledQuantity,
-        unitPrice: entry.pricePerUnit,
+        unit: sub.variantUnit || sub.productId?.unit,
+        quantity: actualVolume,
+        unitPrice: pricePerBaseUnit,
         status: entry.status,
         notes: entry.notes,
       });

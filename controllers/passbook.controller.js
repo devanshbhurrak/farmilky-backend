@@ -13,21 +13,34 @@ export const getCustomerPassbook = async (req, res) => {
 
     // 1. Fetch Subscriptions & Extract Deliveries (Debits)
     const subscriptions = await Subscription.find({ userId })
-      .populate("productId", "name unit")
+      .populate("productId", "name unit variants")
       .lean();
-    
+
     const deliveryEntries = [];
     subscriptions.forEach(sub => {
+      // Resolve variant to get actual volume per unit (e.g. 0.5 for "0.5L")
+      const variant = sub.variantId
+        ? sub.productId?.variants?.find(v => v._id.toString() === sub.variantId.toString())
+        : null;
+      const variantVolume = variant?.quantity ?? 1;
+
       (sub.deliveryHistory || []).forEach(entry => {
         if (["delivered", "extra", "partial"].includes(entry.status)) {
+          const deliveredUnits = entry.actualQuantity ?? entry.quantityDelivered ?? entry.scheduledQuantity ?? null;
+          // Convert bottle/packet count to actual volume (e.g. 1 bottle × 0.5L = 0.5L)
+          const actualVolume = deliveredUnits != null && variantVolume !== 1
+            ? Math.round(deliveredUnits * variantVolume * 1000) / 1000
+            : deliveredUnits;
+
           deliveryEntries.push({
             date: entry.deliveryDate || entry.date,
             type: "debit",
             amount: entry.totalAmount,
             description: `${sub.productId?.name || "Product"} Delivery`,
             notes: entry.notes || "",
-            qty: entry.actualQuantity ?? entry.quantityDelivered ?? entry.scheduledQuantity ?? null,
-            unit: sub.productId?.unit || "",
+            qty: actualVolume,
+            unit: sub.variantUnit || sub.productId?.unit || "",
+            variantLabel: sub.variantLabel || null,
             referenceId: sub._id,
             category: "Subscription"
           });

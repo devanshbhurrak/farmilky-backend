@@ -39,11 +39,14 @@ export const runMonthlyInvoiceCron = async (req, res) => {
     if (!isAuthorizedCronRequest(req)) {
       return res.status(401).json({ message: "Unauthorized cron request" });
     }
-    // Generate invoices for the previous month
+    // Generate invoices for the previous month.
+    // getMonth() returns 0–11, so it naturally equals the previous month in
+    // 1-indexed terms (e.g. September → getMonth()=8 → August in 1-indexed).
+    // The only edge case is January (getMonth()=0) → December of prior year.
     const now = new Date();
-    let month = now.getMonth(); // 0-indexed, so this is previous month (1-indexed)
+    let month = now.getMonth(); // 0-indexed current = 1-indexed previous month
     let year = now.getFullYear();
-    if (month === 0) { month = 12; year -= 1; }
+    if (month === 0) { month = 12; year -= 1; } // January → December of last year
 
     const { generateBulkInvoices, markOverdueInvoices } = await import("../services/invoiceService.js");
     // Mark prior-month unpaid invoices as overdue before generating new ones

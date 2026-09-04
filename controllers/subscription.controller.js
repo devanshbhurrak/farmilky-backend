@@ -142,8 +142,10 @@ export const createSubscription = async (req, res) => {
             variant = product.variants.id(variantId);
             if (!variant) return res.status(400).json({ message: "Variant not found" });
         } else {
-            variant = product.variants.find(v => v.isDefault) || product.variants[0];
+            variant = product.variants.find(v => v.isDefault && v.isAvailable) || product.variants.find(v => v.isAvailable) || product.variants[0];
         }
+        if (!variant.isAvailable || variant.stock <= 0)
+            return res.status(400).json({ message: `${product.name} (${variant.label}) is currently unavailable` });
         pricePerUnit = variant.discountedPrice ?? variant.price;
         resolvedVariantId = variant._id;
         resolvedVariantLabel = variant.label;
@@ -965,7 +967,7 @@ export const deleteDeliveryHistoryEntry = async (req, res) => {
 export const updateSubscriptionAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { quantityPerDay, deliverySchedule, customDays, status, productId, startDate } = req.body;
+    const { quantityPerDay, deliverySchedule, customDays, status, productId, startDate, variantId } = req.body;
 
     const sub = await Subscription.findById(id).populate("productId");
     if (!sub) return res.status(404).json({ message: "Subscription not found" });
@@ -999,9 +1001,33 @@ export const updateSubscriptionAdmin = async (req, res) => {
     const product = await Product.findById(sub.productId?._id || sub.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
+    // If product changed, clear stale variant data before resolving new variant
+    if (productChanged) {
+      sub.variantId = null;
+      sub.variantLabel = null;
+      sub.variantUnit = null;
+    }
+
+    // Resolve variant: explicit variantId in body, or keep existing (unless product changed)
+    const targetVariantId = variantId !== undefined ? variantId : (productChanged ? null : sub.variantId);
+    if (targetVariantId && product.variants?.length > 0) {
+      const variant = product.variants.id(targetVariantId);
+      if (!variant) return res.status(400).json({ message: "Variant not found on product" });
+      sub.variantId = variant._id;
+      sub.variantLabel = variant.label;
+      sub.variantUnit = variant.unit || null;
+      // When variant is set explicitly, derive pricePerUnit from variant unless overridden below
+      if (req.body.pricePerUnit == null) sub.pricePerUnit = variant.discountedPrice ?? variant.price;
+    } else if (variantId === null) {
+      // Explicitly clearing the variant
+      sub.variantId = null;
+      sub.variantLabel = null;
+      sub.variantUnit = null;
+    }
+
     if (req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0) {
       sub.pricePerUnit = Number(req.body.pricePerUnit);
-    } else if (productChanged) {
+    } else if (productChanged && !targetVariantId) {
       sub.pricePerUnit = product.price;
     }
     // else: keep existing sub.pricePerUnit

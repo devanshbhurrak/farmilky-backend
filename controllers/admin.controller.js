@@ -4,6 +4,7 @@ import Subscription from "../models/subscription.model.js";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Complaint from "../models/complaint.model.js";
 import Return from "../models/return.model.js";
+import MilkCollection from "../models/milkCollection.model.js";
 
 export const getAdminStats = async (req, res) => {
   try {
@@ -62,6 +63,66 @@ export const getAdminStats = async (req, res) => {
   } catch (error) {
     console.error("Admin Stats Error:", error);
     res.status(500).json({ message: "Failed to fetch admin stats." });
+  }
+};
+
+export const getDeliveryStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // Monthly subscription qty delivered (delivered/partial/extra all count)
+    // Supports both deliveryDate (current) and date (legacy) fields
+    const [subStats] = await Subscription.aggregate([
+      { $unwind: "$deliveryHistory" },
+      {
+        $match: {
+          $and: [
+            {
+              $or: [
+                { "deliveryHistory.deliveryDate": { $gte: monthStart } },
+                {
+                  "deliveryHistory.deliveryDate": { $exists: false },
+                  "deliveryHistory.date": { $gte: monthStart },
+                },
+              ],
+            },
+            { "deliveryHistory.status": { $in: ["delivered", "partial", "extra"] } },
+          ],
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          qty: { $sum: "$deliveryHistory.actualQuantity" },
+        },
+      },
+    ]);
+
+    // Monthly milk collected from suppliers (confirmed entries only)
+    const [milkStats] = await MilkCollection.aggregate([
+      {
+        $match: {
+          date: { $gte: monthStart },
+          status: "confirmed",
+          actualQty: { $ne: null, $gt: 0 },
+        },
+      },
+      { $group: { _id: null, qty: { $sum: "$actualQty" } } },
+    ]);
+
+    // Subscription deliveries are always in the product's native unit (L for milk).
+    // Order item quantities are discrete counts (bottles/packs), not directly comparable,
+    // so only subscription qty is returned for the delivered-volume figure.
+    res.json({
+      monthly: {
+        deliveredQty: parseFloat((subStats?.qty || 0).toFixed(2)),
+        milkQty: parseFloat((milkStats?.qty || 0).toFixed(2)),
+      },
+    });
+  } catch (error) {
+    console.error("Delivery Stats Error:", error);
+    res.status(500).json({ message: "Failed to fetch delivery stats." });
   }
 };
 

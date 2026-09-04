@@ -46,26 +46,25 @@ export const addToCart = async (req, res) => {
             resolvedVariantLabel = variant.label;
         }
 
-        let cart = await Cart.findOne({userId});
+        // Atomically increment quantity if the item+variant already exists.
+        // $elemMatch ensures both conditions match the SAME array element (not cross-element).
+        const incremented = await Cart.findOneAndUpdate(
+            { userId, items: { $elemMatch: { productId, variantId: resolvedVariantId } } },
+            { $inc: { "items.$.quantity": quantity } },
+            { new: true }
+        );
 
-        if(!cart) {
-            cart = new Cart({
-                userId,
-                items: [{ productId, quantity: quantity || 1, variantId: resolvedVariantId, variantLabel: resolvedVariantLabel }]
-            })
-        } else {
-            const existingItem = cart.items.find(
-                (item) => item.productId.toString() === productId &&
-                    String(item.variantId ?? null) === String(resolvedVariantId ?? null)
-            )
-            if(existingItem) {
-                existingItem.quantity += quantity || 1;
-            } else {
-                cart.items.push({ productId, quantity: quantity || 1, variantId: resolvedVariantId, variantLabel: resolvedVariantLabel })
-            }
+        if (incremented) {
+            return res.status(200).json({ message: 'Added to cart', cart: incremented });
         }
-        await cart.save();
-        res.status(200).json({message: 'Added to cart', cart})
+
+        // Item not in cart yet — push it (upsert creates cart if it doesn't exist)
+        const cart = await Cart.findOneAndUpdate(
+            { userId },
+            { $push: { items: { productId, quantity, variantId: resolvedVariantId, variantLabel: resolvedVariantLabel } } },
+            { upsert: true, new: true }
+        );
+        res.status(200).json({ message: 'Added to cart', cart });
     } catch (error) {
         console.error("Add to Cart Error:", error);
         res.status(500).json({ message: "Failed to add to cart" });
