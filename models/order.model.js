@@ -32,19 +32,19 @@ const orderItemSchema = new mongoose.Schema({
 const addressSchema = new mongoose.Schema({
     street: {
         type: String,
-        required: true
+        default: ""
     },
     city: {
         type: String,
-        required: true
+        default: ""
     },
     pincode: {
         type: String,
-        required: true
+        default: ""
     },
     state: {
         type: String,
-        required: true
+        default: ""
     }
 })
 
@@ -122,6 +122,10 @@ const orderSchema = new mongoose.Schema({
     assignedAgent: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "User",
+        default: null,
+    },
+    orderDate: {
+        type: Date,
         default: null,
     },
 }, { timestamps: true })

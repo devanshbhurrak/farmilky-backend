@@ -30,6 +30,7 @@ import utilsRoutes from "./routes/utils.routes.js";
 import permissionRoutes from "./routes/permission.routes.js";
 import invoiceRoutes from "./routes/invoice.routes.js";
 import upiRedirectRoutes from "./routes/upiRedirect.routes.js";
+import expenseRoutes from "./routes/expense.routes.js";
 
 import initScheduler from "./services/scheduler.js";
 import { runDailyManifestGenerationJob } from "./services/manifestService.js";
@@ -137,6 +138,7 @@ app.use("/api/supplier-payments", supplierPaymentRoutes);
 app.use("/api/utils", utilsRoutes);
 app.use("/api/permissions", permissionRoutes);
 app.use("/api/invoices", invoiceRoutes);
+app.use("/api/expenses", expenseRoutes);
 app.use("/pay/upi", upiRedirectRoutes);   // public UPI deep-link redirect (used by PDF tap button)
 
 // Global Error Handler

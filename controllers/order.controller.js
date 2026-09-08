@@ -162,10 +162,10 @@ export const updateOrderAdmin = async (req, res) => {
 
 export const createOrderAdmin = async (req, res) => {
   try {
-    const { userId, items, address, paymentMethod, paymentStatus, orderStatus } = req.body;
+    const { userId, items, address, paymentMethod, paymentStatus, orderStatus, orderDate } = req.body;
 
-    if (!userId || !items || items.length === 0 || !address) {
-      return res.status(400).json({ message: "User, items, and address are required" });
+    if (!userId || !items || items.length === 0) {
+      return res.status(400).json({ message: "User and items are required" });
     }
 
     for (const item of items) {
@@ -221,15 +221,20 @@ export const createOrderAdmin = async (req, res) => {
       }
     }
 
+    const effectiveAddress = address && (address.street || address.city || address.pincode)
+      ? { street: address.street || "", city: address.city || "", pincode: address.pincode || "", state: address.state || "" }
+      : { street: "", city: "", pincode: "", state: "" };
+
     const newOrder = new Order({
       userId,
       items: orderItems,
-      address,
+      address: effectiveAddress,
       totalAmount,
       paymentMethod: paymentMethod || "COD",
       paymentStatus: paymentStatus || (paymentMethod === "COD" ? "pending" : "paid"),
       orderStatus: orderStatus || "confirmed",
       areaId,
+      ...(orderDate ? { orderDate: new Date(orderDate) } : {}),
     });
 
     // Build stock decrement ops

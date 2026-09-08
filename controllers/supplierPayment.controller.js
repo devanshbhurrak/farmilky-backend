@@ -52,7 +52,7 @@ export const getOutstandingBySupplier = async (req, res) => {
   }
 };
 
-// Get collection total for a date range (used by payment modal preview)
+// Get collection + passbook adjustment totals for a date range (used by payment modal preview)
 export const getCollectionTotalForPeriod = async (req, res) => {
   try {
     const { supplierId, from: fromDate, to: toDate } = req.query;
@@ -63,29 +63,66 @@ export const getCollectionTotalForPeriod = async (req, res) => {
 
     const from = toUTCMidnight(fromDate);
     const to = toUTCMidnight(toDate);
+    const supplierObjId = new mongoose.Types.ObjectId(supplierId);
 
-    const result = await MilkCollection.aggregate([
-      {
-        $match: {
-          supplierId: new mongoose.Types.ObjectId(supplierId),
-          date: { $gte: from, $lte: to },
-          status: "confirmed",
-          paymentId: null,
+    const [collectionResult, adjResult] = await Promise.all([
+      MilkCollection.aggregate([
+        {
+          $match: {
+            supplierId: supplierObjId,
+            date: { $gte: from, $lte: to },
+            status: "confirmed",
+            paymentId: null,
+          },
         },
-      },
-      {
-        $group: {
-          _id: null,
-          collectionTotal: { $sum: "$totalAmount" },
-          collectionCount: { $sum: 1 },
+        {
+          $group: {
+            _id: null,
+            collectionTotal: { $sum: "$totalAmount" },
+            collectionCount: { $sum: 1 },
+          },
         },
-      },
+      ]),
+      // Filter adjustments by the user-selected transaction `date`, not createdAt
+      SupplierAdjustment.aggregate([
+        {
+          $match: {
+            supplierId: supplierObjId,
+            date: { $gte: from, $lte: to },
+            paymentId: null,
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            creditTotal: {
+              $sum: { $cond: [{ $eq: ["$type", "credit"] }, "$amount", 0] },
+            },
+            debitTotal: {
+              $sum: { $cond: [{ $eq: ["$type", "debit"] }, "$amount", 0] },
+            },
+            adjustmentCount: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
-    const data = result[0] || { collectionTotal: 0, collectionCount: 0 };
+    const collections = collectionResult[0] || { collectionTotal: 0, collectionCount: 0 };
+    const adjs = adjResult[0] || { creditTotal: 0, debitTotal: 0, adjustmentCount: 0 };
+
+    const collectionTotal = parseFloat(collections.collectionTotal.toFixed(2));
+    // Net adjustment: credits increase what we owe the supplier, debits decrease it
+    const adjustmentNet = parseFloat((adjs.creditTotal - adjs.debitTotal).toFixed(2));
+    const grandTotal = parseFloat((collectionTotal + adjustmentNet).toFixed(2));
+
     res.status(200).json({
-      collectionTotal: parseFloat(data.collectionTotal.toFixed(2)),
-      collectionCount: data.collectionCount,
+      collectionTotal,
+      collectionCount: collections.collectionCount,
+      adjustmentNet,
+      adjustmentCreditTotal: parseFloat(adjs.creditTotal.toFixed(2)),
+      adjustmentDebitTotal: parseFloat(adjs.debitTotal.toFixed(2)),
+      adjustmentCount: adjs.adjustmentCount,
+      grandTotal,
     });
   } catch (error) {
     console.error("Get Collection Total Error:", error);
@@ -116,6 +153,7 @@ export const recordPayment = async (req, res) => {
 
     const session = await mongoose.startSession();
     let payment, collectionTotal, adjustment = null, modifiedCount = 0;
+    let settledAdjustmentCount = 0, adjustmentNet = 0;
 
     try {
       await session.withTransaction(async () => {
@@ -135,15 +173,13 @@ export const recordPayment = async (req, res) => {
         }], { session });
 
         // Mark qualifying confirmed collections as paid
-        const collectionFilter = {
-          supplierId: new mongoose.Types.ObjectId(supplierId),
-          date: { $gte: from, $lte: to },
-          status: "confirmed",
-          paymentId: null,
-        };
-
         const updateResult = await MilkCollection.updateMany(
-          collectionFilter,
+          {
+            supplierId: new mongoose.Types.ObjectId(supplierId),
+            date: { $gte: from, $lte: to },
+            status: "confirmed",
+            paymentId: null,
+          },
           { $set: { paymentId: payment._id } },
           { session }
         );
@@ -161,7 +197,7 @@ export const recordPayment = async (req, res) => {
         payment.collectionTotal = collectionTotal;
         await payment.save({ session });
 
-        // Decrement supplyBalance by collection total (what was actually settled)
+        // Decrement supplyBalance by collection total
         if (collectionTotal > 0) {
           await Supplier.updateOne(
             { _id: supplierId },
@@ -170,8 +206,50 @@ export const recordPayment = async (req, res) => {
           );
         }
 
-        // Handle payment difference → auto-create passbook adjustment
-        const diff = parseFloat((paymentAmount - collectionTotal).toFixed(2));
+        // Settle passbook adjustments in the date range.
+        // Filter by the user-selected transaction `date` field, not createdAt.
+        const pendingAdjustments = await SupplierAdjustment.find(
+          {
+            supplierId: new mongoose.Types.ObjectId(supplierId),
+            date: { $gte: from, $lte: to },
+            paymentId: null,
+          },
+          null,
+          { session }
+        ).lean();
+
+        if (pendingAdjustments.length > 0) {
+          const adjIds = pendingAdjustments.map((a) => a._id);
+          await SupplierAdjustment.updateMany(
+            { _id: { $in: adjIds } },
+            { $set: { paymentId: payment._id } },
+            { session }
+          );
+
+          let creditTotal = 0, debitTotal = 0;
+          pendingAdjustments.forEach((a) => {
+            if (a.type === "credit") creditTotal += a.amount;
+            else debitTotal += a.amount;
+          });
+
+          adjustmentNet = parseFloat((creditTotal - debitTotal).toFixed(2));
+          settledAdjustmentCount = pendingAdjustments.length;
+
+          // Reverse their effect on passbookBalance since they are now settled
+          // (credits had added to passbookBalance; debits had subtracted — undo both)
+          const passbookReversal = parseFloat((debitTotal - creditTotal).toFixed(2));
+          if (Math.abs(passbookReversal) > 0.001) {
+            await Supplier.updateOne(
+              { _id: supplierId },
+              { $inc: { passbookBalance: passbookReversal } },
+              { session }
+            );
+          }
+        }
+
+        // Handle payment difference vs (collections + adjustments) → auto-create passbook entry
+        const expectedTotal = parseFloat((collectionTotal + adjustmentNet).toFixed(2));
+        const diff = parseFloat((paymentAmount - expectedTotal).toFixed(2));
 
         if (Math.abs(diff) > 0.01) {
           const adjType = diff > 0 ? "debit" : "credit";
@@ -183,7 +261,9 @@ export const recordPayment = async (req, res) => {
             category: "payment_difference",
             amount: adjAmount,
             date: paidAt ? new Date(paidAt) : new Date(),
-            description: `Payment difference: paid ₹${paymentAmount} against ₹${collectionTotal} collections`,
+            description: adjustmentNet !== 0
+              ? `Payment difference: paid ₹${paymentAmount} against ₹${expectedTotal} expected (₹${collectionTotal} collections + ₹${adjustmentNet} passbook)`
+              : `Payment difference: paid ₹${paymentAmount} against ₹${collectionTotal} collections`,
             notes: "",
             recordedBy: req.user._id,
             paymentId: payment._id,
@@ -201,10 +281,17 @@ export const recordPayment = async (req, res) => {
       await session.endSession();
     }
 
+    let message = `Payment recorded. ${modifiedCount} collection(s) marked as paid.`;
+    if (settledAdjustmentCount > 0) {
+      message += ` ${settledAdjustmentCount} passbook adjustment(s) settled.`;
+    }
+
     res.status(201).json({
-      message: `Payment recorded. ${modifiedCount} collection(s) marked as paid.`,
+      message,
       payment,
       collectionTotal,
+      adjustmentNet,
+      settledAdjustmentCount,
       adjustment,
     });
   } catch (error) {

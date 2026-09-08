@@ -36,7 +36,10 @@ export const getSupplierPassbook = async (req, res) => {
       category: a.category,
       recordedBy: a.recordedBy?.name,
       paymentId: a.paymentId || null,
-      isAuto: !!a.paymentId,
+      // isAuto: system-generated payment_difference entry (not manually created)
+      isAuto: a.category === "payment_difference" && !!a.paymentId,
+      // isSettled: manually created but paid off as part of a recorded payment
+      isSettled: !!a.paymentId && a.category !== "payment_difference",
       createdAt: a.createdAt,
     }));
 
@@ -111,7 +114,10 @@ export const deleteAdjustment = async (req, res) => {
     if (!adjustment) return res.status(404).json({ message: "Adjustment not found." });
 
     if (adjustment.paymentId) {
-      return res.status(400).json({ message: "Cannot delete auto-created payment adjustments." });
+      const reason = adjustment.category === "payment_difference"
+        ? "Cannot delete auto-created payment difference entries."
+        : "Cannot delete adjustments that have been settled in a recorded payment.";
+      return res.status(400).json({ message: reason });
     }
 
     const reverseDelta = adjustment.type === "credit" ? -adjustment.amount : adjustment.amount;

@@ -5,6 +5,7 @@ import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Complaint from "../models/complaint.model.js";
 import Return from "../models/return.model.js";
 import MilkCollection from "../models/milkCollection.model.js";
+import Expense from "../models/expense.model.js";
 
 export const getAdminStats = async (req, res) => {
   try {
@@ -276,5 +277,85 @@ export const getDeliveryPerformance = async (req, res) => {
   } catch (error) {
     console.error("Delivery Performance Error:", error);
     res.status(500).json({ message: "Failed to fetch delivery performance." });
+  }
+};
+
+export const getProfitStats = async (req, res) => {
+  try {
+    const now = new Date();
+
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const [
+      todayOrderRev,
+      monthOrderRev,
+      todayExpenses,
+      monthExpenses,
+    ] = await Promise.all([
+      // Today's revenue: delivered orders where deliveredAt is today
+      Order.aggregate([
+        {
+          $match: {
+            orderStatus: "delivered",
+            $or: [
+              { deliveredAt: { $gte: todayStart, $lte: todayEnd } },
+              // Fallback: orders confirmed/updated today without a deliveredAt field
+              { updatedAt: { $gte: todayStart, $lte: todayEnd } },
+            ],
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      ]),
+
+      // This month's revenue: delivered orders created this month
+      Order.aggregate([
+        {
+          $match: {
+            orderStatus: "delivered",
+            createdAt: { $gte: monthStart, $lte: monthEnd },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      ]),
+
+      // Today's expenses
+      Expense.aggregate([
+        { $match: { date: { $gte: todayStart, $lte: todayEnd } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+
+      // This month's expenses
+      Expense.aggregate([
+        { $match: { date: { $gte: monthStart, $lte: monthEnd } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+    ]);
+
+    const todayRevenue  = todayOrderRev[0]?.total  || 0;
+    const monthRevenue  = monthOrderRev[0]?.total  || 0;
+    const todayCosts    = todayExpenses[0]?.total   || 0;
+    const monthCosts    = monthExpenses[0]?.total   || 0;
+
+    res.status(200).json({
+      today: {
+        revenue: todayRevenue,
+        expenses: todayCosts,
+        profit: todayRevenue - todayCosts,
+      },
+      month: {
+        revenue: monthRevenue,
+        expenses: monthCosts,
+        profit: monthRevenue - monthCosts,
+      },
+    });
+  } catch (error) {
+    console.error("Profit Stats Error:", error);
+    res.status(500).json({ message: "Failed to fetch profit stats." });
   }
 };
