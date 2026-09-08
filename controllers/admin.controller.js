@@ -74,6 +74,16 @@ export const getDeliveryStats = async (req, res) => {
     // Monthly subscription qty delivered (delivered/partial/extra all count)
     // Supports both deliveryDate (current) and date (legacy) fields
     const [subStats] = await Subscription.aggregate([
+      // Join with products to get the base unit for subscriptions without variant info
+      {
+        $lookup: {
+          from: "products",
+          localField: "productId",
+          foreignField: "_id",
+          as: "_product",
+          pipeline: [{ $project: { unit: 1 } }],
+        },
+      },
       { $unwind: "$deliveryHistory" },
       {
         $match: {
@@ -92,9 +102,46 @@ export const getDeliveryStats = async (req, res) => {
         },
       },
       {
+        // Convert packet count to liters using variant info
+        $addFields: {
+          "deliveryHistory.volumeInLiters": {
+            $let: {
+              vars: {
+                vQty: { $ifNull: ["$variantQuantity", null] },
+                vUnit: { $toLower: { $ifNull: ["$variantUnit", ""] } },
+                pUnit: { $toLower: { $ifNull: [{ $arrayElemAt: ["$_product.unit", 0] }, ""] } },
+                actual: { $ifNull: ["$deliveryHistory.actualQuantity", "$quantityPerDay"] },
+              },
+              in: {
+                $cond: {
+                  // Has variant info with liquid unit → convert properly
+                  if: { $and: [{ $ne: ["$$vQty", null] }, { $in: ["$$vUnit", ["l", "ml"]] }] },
+                  then: {
+                    $multiply: [
+                      "$$actual",
+                      { $cond: { if: { $eq: ["$$vUnit", "ml"] }, then: { $divide: ["$$vQty", 1000] }, else: "$$vQty" } },
+                    ],
+                  },
+                  else: {
+                    $cond: {
+                      // No variant but product unit is L → legacy milk subscription, count as liters
+                      if: { $eq: ["$$pUnit", "l"] },
+                      then: "$$actual",
+                      // Non-liquid product → exclude from liter count
+                      else: 0,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      { $project: { _product: 0 } },
+      {
         $group: {
           _id: null,
-          qty: { $sum: "$deliveryHistory.actualQuantity" },
+          qty: { $sum: "$deliveryHistory.volumeInLiters" },
         },
       },
     ]);

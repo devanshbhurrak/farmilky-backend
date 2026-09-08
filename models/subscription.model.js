@@ -59,8 +59,9 @@ const subscriptionSchema = new mongoose.Schema(
       default: null,
     },
     variantId:    { type: mongoose.Schema.Types.ObjectId, default: null },
-    variantLabel: { type: String, default: null },
-    variantUnit:  { type: String, default: null },
+    variantLabel:    { type: String, default: null },
+    variantUnit:     { type: String, default: null },
+    variantQuantity: { type: Number, default: null },
     status: {
       type: String,
       enum: ["active", "paused", "cancelled"],

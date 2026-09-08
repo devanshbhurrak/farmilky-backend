@@ -43,6 +43,7 @@ export const createSubscriptionAdmin = async (req, res) => {
     let adminResolvedVariantId = null;
     let adminResolvedVariantLabel = null;
     let adminResolvedVariantUnit = null;
+    let adminResolvedVariantQuantity = null;
     const explicitPrice = req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0;
     let pricePerUnit = explicitPrice ? Number(req.body.pricePerUnit) : product.price;
 
@@ -59,6 +60,7 @@ export const createSubscriptionAdmin = async (req, res) => {
         adminResolvedVariantId = variant._id;
         adminResolvedVariantLabel = variant.label;
         adminResolvedVariantUnit = variant.unit || null;
+        adminResolvedVariantQuantity = variant.quantity ?? null;
     }
 
     const totalPricePerDay = parseFloat((pricePerUnit * parsedQuantityPerDay).toFixed(2));
@@ -96,6 +98,7 @@ export const createSubscriptionAdmin = async (req, res) => {
       variantId: adminResolvedVariantId,
       variantLabel: adminResolvedVariantLabel,
       variantUnit: adminResolvedVariantUnit,
+      variantQuantity: adminResolvedVariantQuantity,
     });
 
     await subscription.save();
@@ -134,6 +137,7 @@ export const createSubscription = async (req, res) => {
     let resolvedVariantId = null;
     let resolvedVariantLabel = null;
     let resolvedVariantUnit = null;
+    let resolvedVariantQuantity = null;
 
     if (product.variants?.length > 0) {
         const variantId = req.body.variantId;
@@ -150,6 +154,7 @@ export const createSubscription = async (req, res) => {
         resolvedVariantId = variant._id;
         resolvedVariantLabel = variant.label;
         resolvedVariantUnit = variant.unit || null;
+        resolvedVariantQuantity = variant.quantity ?? null;
     }
 
     const totalPricePerDay = parseFloat((pricePerUnit * parsedQuantityPerDay).toFixed(2));
@@ -201,6 +206,7 @@ export const createSubscription = async (req, res) => {
       variantId: resolvedVariantId,
       variantLabel: resolvedVariantLabel,
       variantUnit: resolvedVariantUnit,
+      variantQuantity: resolvedVariantQuantity,
     });
 
     await subscription.save();
@@ -366,18 +372,35 @@ export const getTodaySupply = async (req, res) => {
 
         const subscriptions = await Subscription.find({ status: "active" })
             .populate("userId", "name email phone")
-            .populate("productId", "name unit image price category");
+            .populate("productId", "name unit image price category variants");
 
         const dueSubscriptions = subscriptions.filter((subscription) =>
             isSubscriptionDueOnDate(subscription, today, holidayDates)
         );
+
+        // Helper: compute volume in liters for a subscription
+        const toVolumeInLiters = (sub) => {
+            let vQty = sub.variantQuantity;
+            let vUnit = (sub.variantUnit || "").toLowerCase();
+            // Fallback to product variant for legacy data
+            if (vQty == null && sub.variantId && sub.productId?.variants) {
+                const pv = sub.productId.variants.find((v) => String(v._id) === String(sub.variantId));
+                if (pv) { vQty = pv.quantity; vUnit = (pv.unit || "").toLowerCase(); }
+            }
+            if (vQty != null && (vUnit === "l" || vUnit === "ml")) {
+                return sub.quantityPerDay * (vUnit === "ml" ? vQty / 1000 : vQty);
+            }
+            const pUnit = (sub.productId?.unit || "").toLowerCase();
+            return pUnit === "l" ? sub.quantityPerDay : null;
+        };
 
         const supplies = dueSubscriptions.map((subscription) => ({
             subscriptionId: subscription._id,
             user: subscription.userId,
             product: subscription.productId,
             quantity: subscription.quantityPerDay,
-            unit: subscription.productId?.unit || "unit",
+            volumeInLiters: toVolumeInLiters(subscription),
+            unit: subscription.variantUnit || subscription.productId?.unit || "unit",
             totalAmount: subscription.totalPricePerDay,
             deliverySchedule: subscription.deliverySchedule,
             customDays: subscription.customDays,
@@ -394,11 +417,13 @@ export const getTodaySupply = async (req, res) => {
                 name: supply.product?.name || "Unknown Product",
                 unit: supply.unit,
                 totalQuantity: 0,
+                totalVolumeLiters: 0,
                 totalAmount: 0,
                 customerCount: 0,
             };
 
             existing.totalQuantity += supply.quantity;
+            existing.totalVolumeLiters += supply.volumeInLiters ?? 0;
             existing.totalAmount += supply.totalAmount;
             existing.customerCount += 1;
 
@@ -457,7 +482,7 @@ export const getDeliveryBoard = async (req, res) => {
                 ],
             })
                 .populate(userPopulate)
-                .populate("productId", "name unit image price category"),
+                .populate("productId", "name unit image price category variants"),
             Order.find({
                 $or: [
                     { orderStatus: { $in: ["placed", "confirmed"] } },
@@ -493,6 +518,24 @@ export const getDeliveryBoard = async (req, res) => {
                 const subDefaultAddr = subUser?.addresses?.find((a) => a.isDefault) || subUser?.addresses?.[0];
                 const subLat = (subDefaultAddr?.lat != null && isFinite(subDefaultAddr.lat)) ? subDefaultAddr.lat : null;
                 const subLng = (subDefaultAddr?.lng != null && isFinite(subDefaultAddr.lng)) ? subDefaultAddr.lng : null;
+                // Compute actual volume in liters from variant info
+                let vQty = subscription.variantQuantity;
+                let vUnit = (subscription.variantUnit || "").toLowerCase();
+                // Fallback: resolve from populated product variants for legacy data
+                if (vQty == null && subscription.variantId && subscription.productId?.variants) {
+                    const pv = subscription.productId.variants.find(
+                        (v) => String(v._id) === String(subscription.variantId)
+                    );
+                    if (pv) { vQty = pv.quantity; vUnit = (pv.unit || "").toLowerCase(); }
+                }
+                let volumePerUnit = null;
+                if (vQty != null && (vUnit === "l" || vUnit === "ml")) {
+                    volumePerUnit = vUnit === "ml" ? vQty / 1000 : vQty;
+                }
+                const volumeInLiters = volumePerUnit != null
+                    ? subscription.quantityPerDay * volumePerUnit
+                    : (effectiveUnit.toLowerCase() === "l" ? subscription.quantityPerDay : null);
+
                 return {
                     id: String(subscription._id),
                     type: "subscription",
@@ -507,6 +550,7 @@ export const getDeliveryBoard = async (req, res) => {
                     productLabel: label,
                     quantity: subscription.quantityPerDay,
                     unit: effectiveUnit,
+                    volumeInLiters,
                     amount: subscription.totalPricePerDay || 0,
                     schedule: subscription.deliverySchedule,
                     status: subscription.status,
@@ -1006,6 +1050,7 @@ export const updateSubscriptionAdmin = async (req, res) => {
       sub.variantId = null;
       sub.variantLabel = null;
       sub.variantUnit = null;
+      sub.variantQuantity = null;
     }
 
     // Resolve variant: explicit variantId in body, or keep existing (unless product changed)
@@ -1016,6 +1061,7 @@ export const updateSubscriptionAdmin = async (req, res) => {
       sub.variantId = variant._id;
       sub.variantLabel = variant.label;
       sub.variantUnit = variant.unit || null;
+      sub.variantQuantity = variant.quantity ?? null;
       // When variant is set explicitly, derive pricePerUnit from variant unless overridden below
       if (req.body.pricePerUnit == null) sub.pricePerUnit = variant.discountedPrice ?? variant.price;
     } else if (variantId === null) {
@@ -1023,6 +1069,7 @@ export const updateSubscriptionAdmin = async (req, res) => {
       sub.variantId = null;
       sub.variantLabel = null;
       sub.variantUnit = null;
+      sub.variantQuantity = null;
     }
 
     if (req.body.pricePerUnit != null && Number(req.body.pricePerUnit) > 0) {
