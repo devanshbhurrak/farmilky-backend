@@ -29,6 +29,9 @@ const paymentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  receivedDate: {
+    type: Date,
+  },
 }, { timestamps: true });
 
 paymentSchema.index({ userId: 1, date: -1 });

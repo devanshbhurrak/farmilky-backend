@@ -706,7 +706,7 @@ export const recordSubscriptionDeliveryOutcome = async (req, res) => {
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const isBackdate = targetDate.getTime() <= today.getTime();
+    const isBackdate = targetDate.getTime() < today.getTime();
 
     const holidayDates = await getHolidayDateSet();
 

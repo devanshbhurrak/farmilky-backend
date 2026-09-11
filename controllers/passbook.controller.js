@@ -98,9 +98,13 @@ export const getCustomerPassbook = async (req, res) => {
         type: isDebitAdj ? "debit" : "credit",
         amount: pay.amount,
         description: isDebitAdj ? "Manual Debit" : isAdjustment ? "Manual Credit" : "Payment Received",
-        notes: pay.notes || pay.transactionId || "",
+        notes: pay.notes || "",
+        transactionId: pay.transactionId || "",
+        receivedDate: pay.receivedDate || null,
         recordedBy: pay.recordedBy?.name,
         referenceId: pay._id,
+        paymentType: pay.type,       // raw type for edit form
+        isEditable: true,            // marks this as a payment entry (not delivery/order)
         category: isAdjustment ? "Adjustment" : "Payment",
       };
     });

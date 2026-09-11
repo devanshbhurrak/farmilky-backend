@@ -79,12 +79,15 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
   // 2. Orders → Debit entries (and reversal credits)
   const orderQuery = { userId };
   if (startDate || endDate) {
-    // Filter by deliveredAt when date range is specified
-    const deliveredAtFilter = {};
-    if (startDate) deliveredAtFilter.$gte = startDate;
-    if (endDate) deliveredAtFilter.$lte = endDate;
+    const rangeFilter = {};
+    if (startDate) rangeFilter.$gte = startDate;
+    if (endDate) rangeFilter.$lte = endDate;
+    // Fetch orders that were delivered in this period (for debit entries)
+    // AND orders delivered before/in this period but cancelled/reversed within it (for credit entries)
     orderQuery.$or = [
-      { deliveredAt: Object.keys(deliveredAtFilter).length ? deliveredAtFilter : { $ne: null } },
+      { deliveredAt: rangeFilter },
+      { deliveredAt: { $ne: null }, orderStatus: { $ne: "delivered" }, cancelledAt: rangeFilter },
+      { deliveredAt: { $ne: null }, orderStatus: { $ne: "delivered" }, updatedAt: rangeFilter },
     ];
   } else {
     orderQuery.$or = [{ orderStatus: "delivered" }, { deliveredAt: { $ne: null } }];
@@ -94,27 +97,31 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
   const orderEntries = [];
   orders.forEach((order) => {
     const delivDate = new Date(order.deliveredAt || order.createdAt);
-    if (startDate && delivDate < startDate) return;
-    if (endDate && delivDate > endDate) return;
+    const delivInRange = (!startDate || delivDate >= startDate) && (!endDate || delivDate <= endDate);
 
-    orderEntries.push({
-      date: delivDate,
-      type: "debit",
-      entryType: "debit",
-      amount: order.totalAmount || 0,
-      description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
-      category: "Order",
-      referenceId: order._id,
-      referenceModel: "Order",
-      quantity: 1,
-      unitPrice: order.totalAmount,
-      notes: order.items?.map((i) => `${i.name} x${i.quantity}`).join(", "),
-    });
+    // Debit entry: only if the delivery date falls within the billing period
+    if (delivInRange) {
+      orderEntries.push({
+        date: delivDate,
+        type: "debit",
+        entryType: "debit",
+        amount: order.totalAmount || 0,
+        description: `Order #${order._id.toString().slice(-6).toUpperCase()}`,
+        category: "Order",
+        referenceId: order._id,
+        referenceModel: "Order",
+        quantity: 1,
+        unitPrice: order.totalAmount,
+        notes: order.items?.map((i) => `${i.name} x${i.quantity}`).join(", "),
+      });
+    }
 
-    // If order was later reversed (cancelled after delivery)
+    // Credit entry (reversal): independently check if the reversal date is in this period
+    // This handles cross-period cancellations: delivered in month A, cancelled in month B
     if (order.deliveredAt && order.orderStatus !== "delivered") {
       const reversalDate = new Date(order.cancelledAt || order.updatedAt || order.deliveredAt);
-      if ((!startDate || reversalDate >= startDate) && (!endDate || reversalDate <= endDate)) {
+      const reversalInRange = (!startDate || reversalDate >= startDate) && (!endDate || reversalDate <= endDate);
+      if (reversalInRange) {
         orderEntries.push({
           date: reversalDate,
           type: "credit",

@@ -4,7 +4,7 @@ import User from "../models/user.model.js";
 
 export const recordPaymentAdmin = async (req, res) => {
     try {
-        const { userId, amount, transactionId, notes, date, type = "payment" } = req.body;
+        const { userId, amount, transactionId, notes, date, receivedDate, type = "payment" } = req.body;
         const role = req.user?.role;
 
         const parsedAmount = Number(amount);
@@ -30,6 +30,7 @@ export const recordPaymentAdmin = async (req, res) => {
             notes,
             recordedBy: req.user._id,
             date: date ? new Date(date) : new Date(),
+            receivedDate: receivedDate ? new Date(receivedDate) : undefined,
         });
 
         // credit_adjustment and payment both reduce balance (give customer money / receive payment)
@@ -60,6 +61,68 @@ export const recordPaymentAdmin = async (req, res) => {
     } catch (error) {
         console.error("Record Payment Error:", error);
         res.status(500).json({ message: "Failed to record payment." });
+    }
+};
+
+export const updatePaymentAdmin = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { amount, type, transactionId, notes, date, receivedDate } = req.body;
+
+        const payment = await Payment.findById(id);
+        if (!payment) return res.status(404).json({ message: "Payment not found" });
+
+        const parsedAmount = Number(amount);
+        if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) {
+            return res.status(400).json({ message: "A positive amount is required." });
+        }
+
+        const validTypes = ["payment", "credit_adjustment", "debit_adjustment"];
+        if (!validTypes.includes(type)) {
+            return res.status(400).json({ message: "Invalid payment type." });
+        }
+
+        // Calculate balance delta adjustment:
+        // Revert the old delta, then apply the new delta
+        const oldDelta = payment.type === "debit_adjustment" ? payment.amount : -payment.amount;
+        const newDelta = type === "debit_adjustment" ? parsedAmount : -parsedAmount;
+        const balanceAdjustment = -oldDelta + newDelta; // net change to accountBalance
+
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                payment.amount = parsedAmount;
+                payment.type = type;
+                payment.transactionId = transactionId !== undefined ? transactionId : payment.transactionId;
+                payment.notes = notes !== undefined ? notes : payment.notes;
+                payment.date = date ? new Date(date) : payment.date;
+                // receivedDate: null means clear, undefined means keep existing, string means update
+                if (receivedDate !== undefined) {
+                    payment.receivedDate = receivedDate ? new Date(receivedDate) : null;
+                }
+                await payment.save({ session });
+
+                if (balanceAdjustment !== 0) {
+                    await User.findByIdAndUpdate(payment.userId, {
+                        $inc: { accountBalance: balanceAdjustment }
+                    }, { session });
+                }
+            });
+        } finally {
+            await session.endSession();
+        }
+
+        res.status(200).json({ message: "Payment updated successfully.", payment });
+
+        // Async invoice sync
+        import("../services/invoiceService.js").then(({ syncInvoiceStatusAfterPayment }) => {
+            syncInvoiceStatusAfterPayment(payment.userId.toString()).catch((err) => {
+                console.error("[Payment] Invoice sync after update failed:", err.message);
+            });
+        });
+    } catch (error) {
+        console.error("Update Payment Error:", error);
+        res.status(500).json({ message: "Failed to update payment." });
     }
 };
 
