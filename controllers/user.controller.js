@@ -378,6 +378,8 @@ export const getAllUsersAdmin = async (req, res) => {
 export const getUserByIdAdmin = async (req, res) => {
   try {
     const { id } = req.params;
+    const { month, year } = req.query;
+
     const user = await User.findById(id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -385,8 +387,19 @@ export const getUserByIdAdmin = async (req, res) => {
       await user.populate("agentInfo.assignedArea", "name");
     }
 
+    // Build order date filter when month/year are provided
+    const orderFilter = { userId: id };
+    if (month && year) {
+      const m = parseInt(month) - 1;
+      const y = parseInt(year);
+      orderFilter.createdAt = { $gte: new Date(y, m, 1), $lt: new Date(y, m + 1, 1) };
+    }
+
     const [recentOrders, subscriptions] = await Promise.all([
-      Order.find({ userId: id }).populate("items.productId").sort({ createdAt: -1 }).limit(20),
+      Order.find(orderFilter)
+        .populate("items.productId")
+        .sort({ createdAt: -1 })
+        .limit(month && year ? 200 : 20),
       Subscription.find({ userId: id }).populate("productId", "name unit image price category"),
     ]);
 
