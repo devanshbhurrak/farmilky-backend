@@ -15,7 +15,12 @@ function isValidDate(val) {
 
 export const getAllExpenses = async (req, res) => {
   try {
-    const { startDate, endDate, category, search } = req.query;
+    const { startDate, endDate, category, search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { date: -1, createdAt: -1 }, allowedSortFields: ["date","amount","category","createdAt"] }
+    );
     const filter = {};
 
     if (startDate || endDate) {
@@ -26,7 +31,6 @@ export const getAllExpenses = async (req, res) => {
       }
       if (endDate) {
         if (!isValidDate(endDate)) return res.status(400).json({ message: "Invalid endDate." });
-        // Include the full end day
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
         filter.date.$lte = end;
@@ -36,14 +40,20 @@ export const getAllExpenses = async (req, res) => {
     if (category) filter.category = category;
     if (search) filter.description = { $regex: search, $options: "i" };
 
-    const expenses = await Expense.find(filter)
-      .populate("recordedBy", "name")
-      .sort({ date: -1, createdAt: -1 })
-      .lean();
+    const [expenses, total, aggTotal] = await Promise.all([
+      Expense.find(filter)
+        .populate("recordedBy", "name")
+        .sort(sort)
+        .skip(skip)
+        .limit(lim)
+        .lean(),
+      Expense.countDocuments(filter),
+      Expense.aggregate([{ $match: filter }, { $group: { _id: null, total: { $sum: "$amount" } } }]),
+    ]);
 
-    const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const totalAmount = aggTotal[0]?.total || 0;
 
-    res.status(200).json({ expenses, totalAmount, count: expenses.length });
+    res.status(200).json({ expenses, totalAmount, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get All Expenses Error:", error);
     res.status(500).json({ message: "Failed to fetch expenses." });

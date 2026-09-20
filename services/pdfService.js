@@ -516,8 +516,7 @@ export async function generateInvoicePDF(invoice, {
     if (detailed && invoice.lineItems?.length > 0) {
       const dCols = [
         { label: "DATE",        x: M,        w: 60,        align: "left"  },
-        { label: "DESCRIPTION", x: M + 60,   w: 160,       align: "left"  },
-        { label: "CATEGORY",    x: M + 220,  w: 76,        align: "left"  },
+        { label: "DESCRIPTION", x: M + 60,   w: 236,       align: "left"  },
         { label: "QTY",         x: M + 296,  w: 42,        align: "right" },
         { label: "AMOUNT",      x: M + 338,  w: 72,        align: "right" },
         { label: "TYPE",        x: M + 410,  w: W - 410,   align: "right" },
@@ -553,11 +552,7 @@ export async function generateInvoicePDF(invoice, {
         }
 
         const descW = dCols[1].w - 6;
-        const catW  = dCols[2].w - 6;
-        const RH    = Math.max(20, Math.max(
-          measureHeight(doc, desc, descW, "Helvetica", 7.2),
-          measureHeight(doc, item.category || "--", catW, "Helvetica", 7.2),
-        ) + 8);
+        const RH    = Math.max(20, measureHeight(doc, desc, descW, "Helvetica", 7.2) + 8);
 
         if (y + RH > SAFE_BOTTOM) {
           newPage();
@@ -571,21 +566,20 @@ export async function generateInvoicePDF(invoice, {
         doc.fillColor(C.text).font("Helvetica").fontSize(7.2)
           .text(fmtDate(item.date), dCols[0].x + 3, cy,
             { width: dCols[0].w - 6, lineBreak: false })
-          .text(desc, dCols[1].x + 3, cy, { width: descW })
-          .text(item.category || "--", dCols[2].x + 3, cy, { width: catW, lineBreak: false });
+          .text(desc, dCols[1].x + 3, cy, { width: descW });
 
         doc.fillColor(C.muted).font("Helvetica").fontSize(7.2)
           .text(item.quantity != null ? String(item.quantity) : "--",
-            dCols[3].x, cy, { width: dCols[3].w - 3, align: "right", lineBreak: false });
+            dCols[2].x, cy, { width: dCols[2].w - 3, align: "right", lineBreak: false });
 
         const isCr = item.entryType === "credit";
         doc.fillColor(isCr ? C.green : C.text).font("Helvetica").fontSize(7.2)
-          .text(fmt(item.amount), dCols[4].x, cy,
-            { width: dCols[4].w - 3, align: "right", lineBreak: false });
+          .text(fmt(item.amount), dCols[3].x, cy,
+            { width: dCols[3].w - 3, align: "right", lineBreak: false });
 
         // CR / DR badge — mirrors .inv-entry-badge .inv-entry-cr/.inv-entry-dr
         const bW = 22, bH = 12;
-        const bX = dCols[5].x + dCols[5].w - bW - 4;
+        const bX = dCols[4].x + dCols[4].w - bW - 4;
         const bY = y + RH / 2 - bH / 2;
         doc.save().roundedRect(bX, bY, bW, bH, 2)
           .fill(isCr ? "#d1fae5" : "#fee2e2").restore();

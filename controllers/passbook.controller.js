@@ -6,7 +6,7 @@ import User from "../models/user.model.js";
 export const getCustomerPassbook = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { month, year } = req.query; // Optional filters
+    const { month, year, page, limit, search } = req.query; // Optional filters + pagination
 
     const user = await User.findById(userId).select("name accountBalance");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -122,11 +122,35 @@ export const getCustomerPassbook = async (req, res) => {
       });
     }
 
+    // Search across description/notes/category
+    if (search) {
+      const q = String(search).toLowerCase();
+      allEntries = allEntries.filter(e =>
+        (e.description || "").toLowerCase().includes(q) ||
+        (e.notes || "").toLowerCase().includes(q) ||
+        (e.category || "").toLowerCase().includes(q)
+      );
+    }
+
     allEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    // Pagination (default returns all for backward compat if no page/limit)
+    if (page != null || limit != null) {
+      const { parsePagination, buildPaginationMeta } = await import("../utils/pagination.js");
+      const { page: p, limit: lim, skip } = parsePagination({ page, limit }, { defaultLimit: 20, maxLimit: 100 });
+      const total = allEntries.length;
+      const paged = allEntries.slice(skip, skip + lim);
+      const meta = buildPaginationMeta(total, p, lim);
+      return res.status(200).json({ user, entries: paged, ...meta });
+    }
 
     res.status(200).json({
       user,
-      entries: allEntries
+      entries: allEntries,
+      total: allEntries.length,
+      page: 1,
+      limit: allEntries.length || 1,
+      totalPages: 1,
     });
   } catch (error) {
     console.error("Get Customer Passbook Error:", error);

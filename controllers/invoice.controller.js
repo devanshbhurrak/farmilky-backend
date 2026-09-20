@@ -11,28 +11,43 @@ import { sendInvoiceViaWhatsApp } from "../services/whatsappService.js";
 export const listInvoicesAdmin = async (req, res) => {
   try {
     const {
-      month, year, status, userId,
-      page = 1, limit = 50,
+      month, year, status, userId, search,
+      page = 1, limit = 50, sortBy, sortOrder,
     } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 50, maxLimit: 100, defaultSort: { "billingPeriod.year": -1, "billingPeriod.month": -1, createdAt: -1 }, allowedSortFields: ["createdAt","billingPeriod.year","status","netAmountDue","totalCharges"] }
+    );
 
     const filter = {};
     if (month) filter["billingPeriod.month"] = Number(month);
     if (year) filter["billingPeriod.year"] = Number(year);
     if (status) filter.status = status;
     if (userId) filter.userId = userId;
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      const matchedUsers = await User.find({ $or: buildSearchOr(esc, ["name","phone","email"]) }).select("_id").lean();
+      const userIds = matchedUsers.map((u) => u._id);
+      filter.$or = [
+        { invoiceNumber: { $regex: esc, $options: "i" } },
+        ...(userIds.length ? [{ userId: { $in: userIds } }] : []),
+      ];
+    }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    // Use computed sort unless custom sort requested
+    const effectiveSort = sortBy ? sort : { "billingPeriod.year": -1, "billingPeriod.month": -1, createdAt: -1 };
     const [invoices, total] = await Promise.all([
       Invoice.find(filter)
         .populate("userId", "name phone email")
-        .sort({ "billingPeriod.year": -1, "billingPeriod.month": -1, createdAt: -1 })
+        .sort(effectiveSort)
         .skip(skip)
-        .limit(Number(limit))
+        .limit(lim)
         .lean(),
       Invoice.countDocuments(filter),
     ]);
 
-    res.json({ invoices, total, page: Number(page), limit: Number(limit) });
+    res.json({ invoices, ...buildPaginationMeta(total, p, lim) });
   } catch (err) {
     console.error("listInvoicesAdmin:", err);
     res.status(500).json({ message: "Failed to list invoices" });
@@ -99,7 +114,7 @@ export const generateInvoiceAdmin = async (req, res) => {
 // ── Admin: Bulk generate invoices ────────────────────────────────────────
 export const bulkGenerateInvoices = async (req, res) => {
   try {
-    const { month, year, force = false } = req.body;
+    const { month, year, force = false, isEarlyBilling, billingCutoffDate } = req.body;
     const m = Number(month), y = Number(year);
     if (!m || !y || m < 1 || m > 12 || y < 2020 || y > 2100) {
       return res.status(400).json({ message: "Valid month (1-12) and year are required" });
@@ -107,6 +122,8 @@ export const bulkGenerateInvoices = async (req, res) => {
 
     const results = await generateBulkInvoices(m, y, {
       force: Boolean(force),
+      isEarlyBilling: Boolean(isEarlyBilling),
+      billingCutoffDate: billingCutoffDate || undefined,
       generatedBy: "admin",
       generatedByUserId: req.user._id,
     });

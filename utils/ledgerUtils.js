@@ -99,6 +99,11 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
     const delivDate = new Date(order.deliveredAt || order.createdAt);
     const delivInRange = (!startDate || delivDate >= startDate) && (!endDate || delivDate <= endDate);
 
+    // Build a human-readable product name from order items
+    const orderProductName = order.items?.length
+      ? order.items.map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name)).join(", ")
+      : undefined;
+
     // Debit entry: only if the delivery date falls within the billing period
     if (delivInRange) {
       orderEntries.push({
@@ -110,6 +115,7 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
         category: "Order",
         referenceId: order._id,
         referenceModel: "Order",
+        productName: orderProductName,
         quantity: 1,
         unitPrice: order.totalAmount,
         notes: order.items?.map((i) => `${i.name} x${i.quantity}`).join(", "),
@@ -131,6 +137,7 @@ export async function getLedgerEntries(userId, { startDate, endDate } = {}) {
           category: "Order",
           referenceId: order._id,
           referenceModel: "Order",
+          productName: orderProductName,
           quantity: 1,
           unitPrice: order.totalAmount,
           notes: `Status changed to ${order.orderStatus}`,

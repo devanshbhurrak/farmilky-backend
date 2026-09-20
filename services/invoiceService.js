@@ -198,6 +198,7 @@ export async function generateInvoice(userId, month, year, options = {}) {
       category: e.category,
       referenceId: e.referenceId,
       referenceModel: e.referenceModel,
+      productName: e.productName,
       quantity: e.quantity,
       unitPrice: e.unitPrice,
       amount: e.amount,
@@ -326,14 +327,19 @@ export async function syncInvoiceStatusAfterPayment(userId) {
       .filter((e) => e.type === "credit")
       .reduce((s, e) => s + e.amount, 0);
 
+    const totalAdjustments = paymentEntries
+      .filter((e) => e.type === "debit" && e.paymentType === "debit_adjustment")
+      .reduce((s, e) => s + e.amount, 0);
+
     // Use stored orderCredits (defaults to 0 for invoices generated before this field was added)
     const orderCredits = invoice.orderCredits ?? 0;
 
     const newNet = Math.round(
-      (invoice.previousBalance + invoice.totalCharges - orderCredits - totalPayments + invoice.totalAdjustments) * 100
+      (invoice.previousBalance + invoice.totalCharges - orderCredits - totalPayments + totalAdjustments) * 100
     ) / 100;
 
     invoice.totalPayments = Math.round(totalPayments * 100) / 100;
+    invoice.totalAdjustments = Math.round(totalAdjustments * 100) / 100;
     invoice.netAmountDue = newNet;
 
     if (newNet <= 0) {
@@ -343,8 +349,11 @@ export async function syncInvoiceStatusAfterPayment(userId) {
       invoice.status = "partially_paid";
       invoice.paidAt = undefined; // clear paidAt if it was set prematurely
     } else {
-      // No payments remain (e.g. payment was deleted) — revert to draft
-      invoice.status = "draft";
+      // No payments remain (e.g. payment was deleted) — revert to the appropriate
+      // unpaid state: preserve "overdue" and "sent" rather than blindly downgrading to "draft"
+      if (!["overdue", "sent"].includes(invoice.status)) {
+        invoice.status = "draft";
+      }
       invoice.paidAt = undefined;
     }
 

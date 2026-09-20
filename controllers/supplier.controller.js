@@ -4,21 +4,47 @@ import MilkCollection from "../models/milkCollection.model.js";
 
 export const getAllSuppliers = async (req, res) => {
   try {
-    const { active } = req.query;
+    const { active, search, page, limit, sortBy, sortOrder, balance } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","name","supplyBalance","outstandingAmount"] }
+    );
     const match = { isDeleted: false };
     if (active === "true") match.isActive = true;
-
-    const suppliers = await Supplier.aggregate([
+    else if (active === "false" || active === "inactive") match.isActive = false;
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      match.$or = [
+        { name: { $regex: esc, $options: "i" } },
+        { phone: { $regex: esc, $options: "i" } },
+        { location: { $regex: esc, $options: "i" } },
+        { pincode: { $regex: esc, $options: "i" } },
+      ];
+    }
+    const sortField = Object.keys(sort)[0];
+    const sortDir = Object.values(sort)[0];
+    // Build pipeline with optional outstandingAmount filtering after computed field
+    const basePipeline = [
       { $match: match },
-      {
-        $addFields: {
-          outstandingAmount: { $add: ["$supplyBalance", "$passbookBalance"] },
-        },
-      },
-      { $sort: { createdAt: -1 } },
-    ]);
+      { $addFields: { outstandingAmount: { $add: ["$supplyBalance", "$passbookBalance"] } } },
+    ];
+    if (balance === "due") basePipeline.push({ $match: { outstandingAmount: { $gt: 0 } } });
+    else if (balance === "settled" || balance === "zero") basePipeline.push({ $match: { outstandingAmount: { $lte: 0 } } });
 
-    res.status(200).json({ suppliers });
+    const pipeline = [
+      ...basePipeline,
+      { $sort: { [sortField]: sortDir } },
+      { $skip: skip },
+      { $limit: lim },
+    ];
+    const countPipeline = [...basePipeline, { $count: "total" }];
+    const [suppliersResult, countResult] = await Promise.all([
+      Supplier.aggregate(pipeline),
+      Supplier.aggregate(countPipeline),
+    ]);
+    const total = countResult[0]?.total || 0;
+    res.status(200).json({ suppliers: suppliersResult, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get All Suppliers Error:", error);
     res.status(500).json({ message: "Failed to fetch suppliers." });

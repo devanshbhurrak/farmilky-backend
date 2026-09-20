@@ -303,42 +303,39 @@ export const updateProfile = async (req, res) => {
 
 export const getAllUsersAdmin = async (req, res) => {
   try {
-    const { search, role, page, limit, skipEnrichment } = req.query;
+    const { search, role, sortBy, sortOrder, page, limit, skipEnrichment } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","name","accountBalance"] }
+    );
     let query = {};
     if (role) query.role = role;
+    const balance = req.query.balance || req.query.balanceFilter;
+    if (balance === "due") query.accountBalance = { $gt: 0 };
+    else if (balance === "advance") query.accountBalance = { $lt: 0 };
+    else if (balance === "zero") query.accountBalance = 0;
+    else if (balance === "nonzero") query.accountBalance = { $ne: 0 };
+    if (req.query.isActive === "true") query.isActive = true;
+    else if (req.query.isActive === "false") query.isActive = false;
+    if (req.query.unassigned === "true") {
+      query.$and = [...(query.$and || []), { $or: [{ "agentInfo.assignedArea": null }, { "agentInfo.assignedArea": { $exists: false } }, { assignedArea: null }, { assignedArea: { $exists: false } }] }];
+    }
     if (search) {
-      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      query.$or = [
-        { name: { $regex: escapedSearch, $options: "i" } },
-        { email: { $regex: escapedSearch, $options: "i" } },
-        { phone: { $regex: escapedSearch, $options: "i" } },
-      ];
+      const escapedSearch = escapeRegex(search.trim());
+      query.$or = buildSearchOr(escapedSearch, ["name","email","phone"]);
+      // If $and already exists (unassigned), Mongo will AND them implicitly; keep both
     }
 
-    let usersQuery = User.find(query).select("-password").sort({ createdAt: -1 });
-    let total;
-
+    let usersQuery = User.find(query).select("-password").sort(sort).skip(skip).limit(lim);
     if (role === "agent") {
       usersQuery = usersQuery.populate("agentInfo.assignedArea", "name");
     }
 
-    if (page && limit) {
-      const pageNum = parseInt(page, 10);
-      const limitNum = parseInt(limit, 10);
-      total = await User.countDocuments(query);
-      usersQuery = usersQuery.skip((pageNum - 1) * limitNum).limit(limitNum);
-    }
-
-    const users = await usersQuery;
+    const [users, total] = await Promise.all([usersQuery, User.countDocuments(query)]);
 
     if (skipEnrichment === "true") {
-      const response = { users };
-      if (page && limit) {
-        response.total = total;
-        response.page = parseInt(page, 10);
-        response.limit = parseInt(limit, 10);
-      }
-      return res.status(200).json(response);
+      return res.status(200).json({ users, ...buildPaginationMeta(total, p, lim) });
     }
 
     const enriched = await Promise.all(
@@ -362,13 +359,7 @@ export const getAllUsersAdmin = async (req, res) => {
       })
     );
 
-    const response = { users: enriched };
-    if (page && limit) {
-      response.total = total;
-      response.page = parseInt(page, 10);
-      response.limit = parseInt(limit, 10);
-    }
-    res.status(200).json(response);
+    res.status(200).json({ users: enriched, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get All Users Admin Error:", error);
     res.status(500).json({ message: "Failed to fetch users." });

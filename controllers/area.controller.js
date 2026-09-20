@@ -23,8 +23,31 @@ export const createArea = async (req, res) => {
 
 export const getAllAreas = async (req, res) => {
   try {
-    const areas = await Area.find().populate("assignedAgent", "name email phone").sort({ sequence: 1, name: 1 });
-    res.status(200).json({ count: areas.length, areas });
+    const { search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+    const wantsPagination = page != null || limit != null || search;
+    if (!wantsPagination) {
+      const areas = await Area.find().populate("assignedAgent", "name email phone").sort({ sequence: 1, name: 1 });
+      return res.status(200).json({ areas, total: areas.length, page: 1, limit: areas.length || 1, totalPages: 1 });
+    }
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { sequence: 1, name: 1 }, allowedSortFields: ["sequence","name","createdAt"] }
+    );
+    const filter = {};
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = [
+        { name: { $regex: esc, $options: "i" } },
+        { pincodes: { $regex: esc, $options: "i" } },
+        { localities: { $regex: esc, $options: "i" } },
+      ];
+    }
+    const [areas, total] = await Promise.all([
+      Area.find(filter).populate("assignedAgent", "name email phone").sort(sort).skip(skip).limit(lim).lean(),
+      Area.countDocuments(filter),
+    ]);
+    res.status(200).json({ areas, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get Areas Error:", error);
     res.status(500).json({ message: "Failed to fetch areas." });
@@ -106,12 +129,30 @@ export const getAreaCustomers = async (req, res) => {
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
 
-    const customers = await User.find(
-      { assignedArea: req.params.id, role: "customer" },
-      "name phone addresses deliverySequence assignedArea"
-    ).sort({ deliverySequence: 1, name: 1 });
-
-    res.status(200).json({ count: customers.length, customers });
+    const { search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+    const wantsPagination = page != null || limit != null || search || sortBy;
+    if (!wantsPagination) {
+      const customers = await User.find(
+        { assignedArea: req.params.id, role: "customer" },
+        "name phone addresses deliverySequence assignedArea"
+      ).sort({ deliverySequence: 1, name: 1 });
+      return res.status(200).json({ customers, total: customers.length, page: 1, limit: customers.length || 1, totalPages: 1 });
+    }
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { deliverySequence: 1, name: 1 }, allowedSortFields: ["deliverySequence","name","createdAt"] }
+    );
+    const filter = { assignedArea: req.params.id, role: "customer" };
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = buildSearchOr(esc, ["name","phone","email"]);
+    }
+    const [customers, total] = await Promise.all([
+      User.find(filter, "name phone email addresses deliverySequence assignedArea").sort(sort).skip(skip).limit(lim).lean(),
+      User.countDocuments(filter),
+    ]);
+    res.status(200).json({ customers, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get Area Customers Error:", error);
     res.status(500).json({ message: "Failed to fetch area customers." });
@@ -158,11 +199,30 @@ export const updateAreaCustomers = async (req, res) => {
 
 export const getDeliveryAgents = async (req, res) => {
   try {
-    const agents = await User.find(
-      { role: { $in: ["delivery_partner", "delivery", "agent"] } },
-      "name email phone assignedArea"
-    ).populate("assignedArea", "name");
-    res.status(200).json({ count: agents.length, agents });
+    const { search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+    const wantsPagination = page != null || limit != null || search || sortBy;
+    if (!wantsPagination) {
+      const agents = await User.find(
+        { role: { $in: ["delivery_partner", "delivery", "agent"] } },
+        "name email phone assignedArea"
+      ).populate("assignedArea", "name");
+      return res.status(200).json({ agents, total: agents.length, page: 1, limit: agents.length || 1, totalPages: 1 });
+    }
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","name"] }
+    );
+    const filter = { role: { $in: ["delivery_partner", "delivery", "agent"] } };
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = buildSearchOr(esc, ["name","email","phone"]);
+    }
+    const [agents, total] = await Promise.all([
+      User.find(filter, "name email phone assignedArea").populate("assignedArea", "name").sort(sort).skip(skip).limit(lim).lean(),
+      User.countDocuments(filter),
+    ]);
+    res.status(200).json({ agents, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get Delivery Agents Error:", error);
     res.status(500).json({ message: "Failed to fetch delivery agents." });

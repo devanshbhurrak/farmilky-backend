@@ -36,12 +36,42 @@ export const createProduct = async (req, res) => {
 
 export const getAllProducts = async (req, res) => {
     try {
-        const products = await Product.find().sort({createdAt: -1})
-
-        res.status(200).json({
-            count: products.length,
-            products,
-        })
+        const { search, category, isAvailable, page, limit, sortBy, sortOrder } = req.query;
+        const wantsPagination = page != null || limit != null || search || category || (isAvailable !== undefined && isAvailable !== "") || sortBy;
+        if (!wantsPagination) {
+          const products = await Product.find().sort({ createdAt: -1 }).lean();
+          return res.status(200).json({ products, total: products.length, page: 1, limit: products.length || 1, totalPages: 1, count: products.length });
+        }
+        const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+        const { page: p, limit: lim, skip, sort } = parsePagination(
+          { page, limit, sortBy, sortOrder },
+          { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","name","price","category"] }
+        );
+        const filter = {};
+        if (category) {
+          const catLower = String(category).toLowerCase();
+          if (catLower === "dairy") {
+            filter.category = { $in: ["paneer","ghee","curd","butter","cheese"] };
+          } else if (catLower === "milk") {
+            filter.category = "milk";
+          } else {
+            filter.category = category;
+          }
+        }
+        if (isAvailable !== undefined && isAvailable !== "") filter.isAvailable = isAvailable === "true";
+        if (search) {
+          const esc = escapeRegex(search.trim());
+          filter.$or = [
+            { name: { $regex: esc, $options: "i" } },
+            { category: { $regex: esc, $options: "i" } },
+            { description: { $regex: esc, $options: "i" } },
+          ];
+        }
+        const [products, total] = await Promise.all([
+          Product.find(filter).sort(sort).skip(skip).limit(lim).lean(),
+          Product.countDocuments(filter),
+        ]);
+        res.status(200).json({ products, ...buildPaginationMeta(total, p, lim) });
     } catch (error) {
         console.error("Get All Products Error:", error);
         res.status(500).json({ message: "Failed to fetch products." });

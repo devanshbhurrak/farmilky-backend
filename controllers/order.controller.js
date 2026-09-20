@@ -231,7 +231,7 @@ export const createOrderAdmin = async (req, res) => {
       address: effectiveAddress,
       totalAmount,
       paymentMethod: paymentMethod || "COD",
-      paymentStatus: paymentStatus || (paymentMethod === "COD" ? "pending" : "paid"),
+      paymentStatus: paymentStatus || "pending",
       orderStatus: orderStatus || "confirmed",
       areaId,
       ...(orderDate ? { orderDate: new Date(orderDate) } : {}),
@@ -307,7 +307,10 @@ export const createOrder = async (req, res) => {
         if (!cart || cart.items.length === 0)
             return res.status(400).json({ message: 'Cart is empty' })
 
+        // Validate availability and build order items — collect the first validation error
+        let validationError = null;
         const orderItems = cart.items.map((item) => {
+            if (validationError) return null;
             const product = item.productId;
             let effectivePrice = product.price;
             let variantId = null;
@@ -318,13 +321,20 @@ export const createOrder = async (req, res) => {
             if (item.variantId && product.variants?.length > 0) {
                 const variant = product.variants.id(item.variantId);
                 if (variant) {
-                    if (!variant.isAvailable || variant.stock <= 0)
-                        throw new Error(`${product.name} (${variant.label}) is currently unavailable`);
+                    if (!variant.isAvailable || variant.stock <= 0) {
+                        validationError = `${product.name} (${variant.label}) is currently unavailable`;
+                        return null;
+                    }
                     effectivePrice = variant.discountedPrice ?? variant.price;
                     variantId = variant._id;
                     variantLabel = item.variantLabel;
                     unit = variant.unit;
                     originalPrice = variant.discountedPrice != null ? variant.price : null;
+                }
+            } else {
+                if (!product.isAvailable || (product.stock != null && product.stock <= 0)) {
+                    validationError = `${product.name} is currently out of stock`;
+                    return null;
                 }
             }
 
@@ -339,7 +349,11 @@ export const createOrder = async (req, res) => {
                 unit,
                 originalPrice,
             };
-        })
+        });
+
+        if (validationError) {
+            return res.status(400).json({ message: validationError });
+        }
 
         const totalAmount = parseFloat(orderItems.reduce(
             (sum, item) => sum + item.price * item.quantity,
@@ -361,7 +375,7 @@ export const createOrder = async (req, res) => {
             address,
             totalAmount,
             paymentMethod,
-            paymentStatus: paymentMethod === 'COD' ? 'pending' : 'paid',
+            paymentStatus: 'pending',
             orderStatus: 'confirmed',
             areaId,
         })
@@ -408,14 +422,34 @@ export const createOrder = async (req, res) => {
 
 export const getUserOrders = async (req, res) => {
     try {
-        const userId = req.user._id
-
-        const order = await Order.find({ userId }).sort({ createdAt: -1 });
-
-        if (!order || order.length === 0)
-            return res.status(200).json({ order: [] });
-
-        res.status(200).json({ order })
+        const userId = req.user._id;
+        const { status, search, sortBy, sortOrder, page, limit } = req.query;
+        const wantsPagination = page != null || limit != null || status || search || sortBy;
+        if (!wantsPagination) {
+          const order = await Order.find({ userId }).sort({ createdAt: -1 });
+          return res.status(200).json({ order, total: order.length, page: 1, limit: order.length || 1, totalPages: 1 });
+        }
+        const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+        const { page: p, limit: lim, skip, sort } = parsePagination(
+          { page, limit, sortBy, sortOrder },
+          { defaultLimit: 10, maxLimit: 50, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","totalAmount","orderStatus"] }
+        );
+        const filter = { userId };
+        if (status && status !== "all") {
+          if (status === "active") filter.orderStatus = { $in: ["placed","confirmed"] };
+          else filter.orderStatus = status;
+        }
+        if (search) {
+          const esc = escapeRegex(search.trim());
+          filter.$or = [
+            { "items.name": { $regex: esc, $options: "i" } },
+          ];
+        }
+        const [orders, total] = await Promise.all([
+          Order.find(filter).sort(sort).skip(skip).limit(lim).lean(),
+          Order.countDocuments(filter),
+        ]);
+        res.status(200).json({ order: orders, orders, total, ...buildPaginationMeta(total, p, lim) });
     } catch (error) {
         console.error("Get Order Error:", error);
         res.status(500).json({ message: "Failed to fetch order" });
@@ -511,9 +545,37 @@ export const getOrderByIdAdmin = async (req, res) => {
 
 export const getAllOrder = async (req, res) => {
     try {
-        const orders = await Order.find().populate('userId').sort({ createdAt: -1 })
+        const { search, status, paymentStatus, sortBy, sortOrder, page, limit } = req.query;
+        const wantsPagination = page != null || limit != null || search || status || paymentStatus || sortBy;
+        if (!wantsPagination) {
+          const orders = await Order.find().populate('userId').sort({ createdAt: -1 }).lean();
+          return res.status(200).json({ orders, total: orders.length, page: 1, limit: orders.length || 1, totalPages: 1 });
+        }
+        const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+        const { page: p, limit: lim, skip, sort } = parsePagination(
+          { page, limit, sortBy, sortOrder },
+          { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","totalAmount","orderStatus","paymentStatus"] }
+        );
+        const filter = {};
+        if (status) filter.orderStatus = status;
+        if (paymentStatus) filter.paymentStatus = paymentStatus;
 
-        res.status(200).json({ orders });
+        if (search) {
+          const esc = escapeRegex(search.trim());
+          const matchedUsers = await User.find({ $or: buildSearchOr(esc, ["name","email","phone"]) }).select("_id").lean();
+          const searchIds = matchedUsers.map((u) => u._id);
+          if (searchIds.length === 0) {
+            return res.status(200).json({ orders: [], ...buildPaginationMeta(0, p, lim) });
+          }
+          filter.userId = { $in: searchIds };
+        }
+
+        const [orders, total] = await Promise.all([
+          Order.find(filter).populate('userId').sort(sort).skip(skip).limit(lim).lean(),
+          Order.countDocuments(filter),
+        ]);
+
+        res.status(200).json({ orders, ...buildPaginationMeta(total, p, lim) });
     } catch (error) {
         console.error("Get All Orders Error:", error);
         res.status(500).json({ message: "Failed to fetch orders" });

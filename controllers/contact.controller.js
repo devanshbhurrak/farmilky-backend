@@ -50,11 +50,27 @@ export const submitContactMessage = async (req, res) => {
 
 export const getAllContactMessagesAdmin = async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","status","name"] }
+    );
     const filter = {};
     if (status) filter.status = status;
-    const messages = await ContactMessage.find(filter).sort({ createdAt: -1 });
-    res.status(200).json({ count: messages.length, messages });
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = [
+        { name: { $regex: esc, $options: "i" } },
+        { email: { $regex: esc, $options: "i" } },
+        { message: { $regex: esc, $options: "i" } },
+      ];
+    }
+    const [messages, total] = await Promise.all([
+      ContactMessage.find(filter).sort(sort).skip(skip).limit(lim).lean(),
+      ContactMessage.countDocuments(filter),
+    ]);
+    res.status(200).json({ messages, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get All Contact Messages Error:", error);
     res.status(500).json({ message: "Failed to fetch messages." });

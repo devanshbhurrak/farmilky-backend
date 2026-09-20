@@ -5,12 +5,18 @@ import SupplierAdjustment from "../models/supplierAdjustment.model.js";
 export const getSupplierPassbook = async (req, res) => {
   try {
     const { supplierId } = req.params;
-    const { month, year } = req.query;
+    const { month, year, search, page, limit, sortBy, sortOrder } = req.query;
 
     const supplier = await Supplier.findOne({ _id: supplierId, isDeleted: false })
       .select("name phone supplyBalance passbookBalance");
     if (!supplier) return res.status(404).json({ message: "Supplier not found." });
 
+    const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+    const wantsPagination = page != null || limit != null || search || sortBy;
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { date: -1, createdAt: -1 }, allowedSortFields: ["date","amount","createdAt"] }
+    );
     const filter = { supplierId: new mongoose.Types.ObjectId(supplierId) };
 
     if (month && year) {
@@ -20,12 +26,52 @@ export const getSupplierPassbook = async (req, res) => {
       const end = new Date(Date.UTC(targetYear, targetMonth + 1, 1));
       filter.date = { $gte: start, $lt: end };
     }
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = [
+        { description: { $regex: esc, $options: "i" } },
+        { notes: { $regex: esc, $options: "i" } },
+        { category: { $regex: esc, $options: "i" } },
+      ];
+    }
 
-    const adjustments = await SupplierAdjustment.find(filter)
-      .populate("recordedBy", "name")
-      .sort({ date: -1, createdAt: -1 })
-      .lean();
+    if (!wantsPagination) {
+      const all = await SupplierAdjustment.find(filter).populate("recordedBy", "name").sort(sort).lean();
+      const entries = all.map((a) => ({
+        _id: a._id,
+        date: a.date,
+        type: a.type,
+        amount: a.amount,
+        description: a.description,
+        notes: a.notes || "",
+        category: a.category,
+        recordedBy: a.recordedBy?.name,
+        paymentId: a.paymentId || null,
+        isAuto: a.category === "payment_difference" && !!a.paymentId,
+        isSettled: !!a.paymentId && a.category !== "payment_difference",
+        createdAt: a.createdAt,
+      }));
+      return res.status(200).json({
+        supplier: {
+          _id: supplier._id,
+          name: supplier.name,
+          phone: supplier.phone,
+          supplyBalance: supplier.supplyBalance,
+          passbookBalance: supplier.passbookBalance,
+          outstandingAmount: supplier.supplyBalance + supplier.passbookBalance,
+        },
+        entries,
+        total: entries.length,
+        page: 1,
+        limit: entries.length || 1,
+        totalPages: 1,
+      });
+    }
 
+    const [adjustments, total] = await Promise.all([
+      SupplierAdjustment.find(filter).populate("recordedBy", "name").sort(sort).skip(skip).limit(lim).lean(),
+      SupplierAdjustment.countDocuments(filter),
+    ]);
     const entries = adjustments.map((a) => ({
       _id: a._id,
       date: a.date,
@@ -36,9 +82,7 @@ export const getSupplierPassbook = async (req, res) => {
       category: a.category,
       recordedBy: a.recordedBy?.name,
       paymentId: a.paymentId || null,
-      // isAuto: system-generated payment_difference entry (not manually created)
       isAuto: a.category === "payment_difference" && !!a.paymentId,
-      // isSettled: manually created but paid off as part of a recorded payment
       isSettled: !!a.paymentId && a.category !== "payment_difference",
       createdAt: a.createdAt,
     }));
@@ -53,6 +97,7 @@ export const getSupplierPassbook = async (req, res) => {
         outstandingAmount: supplier.supplyBalance + supplier.passbookBalance,
       },
       entries,
+      ...buildPaginationMeta(total, p, lim),
     });
   } catch (error) {
     console.error("Get Supplier Passbook Error:", error);

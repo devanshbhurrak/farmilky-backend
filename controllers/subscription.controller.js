@@ -224,15 +224,25 @@ export const createSubscription = async (req, res) => {
 
 export const getUserSubscription = async (req, res) => {
     try {
-        const userId = req.user._id
-
-        const subs = await Subscription.find({userId})
-            .populate('productId');
-
-        res.status(200).json({
-            count: subs.length,
-            subscription: subs
-        })
+        const userId = req.user._id;
+        const { status, page, limit, sortBy, sortOrder } = req.query;
+        const wantsPagination = page != null || limit != null || status || sortBy;
+        if (!wantsPagination) {
+          const subs = await Subscription.find({userId}).populate('productId');
+          return res.status(200).json({ count: subs.length, subscription: subs, subscriptions: subs, total: subs.length, page: 1, limit: subs.length || 1, totalPages: 1 });
+        }
+        const { parsePagination, buildPaginationMeta } = await import("../utils/pagination.js");
+        const { page: p, limit: lim, skip, sort } = parsePagination(
+          { page, limit, sortBy, sortOrder },
+          { defaultLimit: 10, maxLimit: 50, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","status","nextDeliveryDate"] }
+        );
+        const filter = { userId };
+        if (status && status !== "all") filter.status = status;
+        const [subs, total] = await Promise.all([
+          Subscription.find(filter).populate('productId').sort(sort).skip(skip).limit(lim).lean(),
+          Subscription.countDocuments(filter),
+        ]);
+        res.status(200).json({ count: total, subscription: subs, subscriptions: subs, total, ...buildPaginationMeta(total, p, lim) });
     } catch (error) {
         console.error("Get Subscriptions Error:", error);
         res.status(500).json({ message: "Failed to fetch subscriptions." });
@@ -317,15 +327,51 @@ export const getSubscriptionById = async (req, res) => {
 
 export const getAllSubscriptions = async (req, res) => {
     try {
-        const subscriptions = await Subscription.find()
+        const { search, status, deliverySchedule, sortBy, sortOrder, page, limit } = req.query;
+        const wantsPagination = page != null || limit != null || search || status || deliverySchedule || sortBy;
+        if (!wantsPagination) {
+          const subscriptions = await Subscription.find()
             .populate("userId", "name email phone")
             .populate("productId", "name unit image price category")
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 }).lean();
+          return res.status(200).json({ subscriptions, total: subscriptions.length, page: 1, limit: subscriptions.length || 1, totalPages: 1, count: subscriptions.length });
+        }
+        const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+        const { page: p, limit: lim, skip, sort } = parsePagination(
+          { page, limit, sortBy, sortOrder },
+          { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","startDate","totalPricePerDay","pendingAmount","status"] }
+        );
+        const filter = {};
+        if (status) filter.status = status;
+        if (deliverySchedule) filter.deliverySchedule = deliverySchedule;
 
-        res.status(200).json({
-            count: subscriptions.length,
-            subscriptions,
-        });
+        if (search) {
+          const esc = escapeRegex(search.trim());
+          const [matchedUsers, matchedProducts] = await Promise.all([
+            User.find({ $or: buildSearchOr(esc, ["name","email","phone"]) }).select("_id").lean(),
+            Product.find({ name: { $regex: esc, $options: "i" } }).select("_id").lean(),
+          ]);
+          const ors = [];
+          if (matchedUsers.length) ors.push({ userId: { $in: matchedUsers.map((u) => u._id) } });
+          if (matchedProducts.length) ors.push({ productId: { $in: matchedProducts.map((pr) => pr._id) } });
+          if (ors.length === 0) {
+            return res.status(200).json({ subscriptions: [], ...buildPaginationMeta(0, p, lim) });
+          }
+          filter.$or = ors;
+        }
+
+        const [subscriptions, total] = await Promise.all([
+          Subscription.find(filter)
+            .populate("userId", "name email phone")
+            .populate("productId", "name unit image price category")
+            .sort(sort)
+            .skip(skip)
+            .limit(lim)
+            .lean(),
+          Subscription.countDocuments(filter),
+        ]);
+
+        res.status(200).json({ subscriptions, ...buildPaginationMeta(total, p, lim) });
     } catch (error) {
         console.error("Get All Subscriptions Error:", error);
         res.status(500).json({ message: "Failed to fetch subscriptions." });
@@ -466,6 +512,11 @@ export const getDeliveryBoard = async (req, res) => {
         const status = req.query.status || "all";
 
         const areaFilter = req.query.area || "all";
+        const searchRaw = req.query.search || "";
+        const pageRaw = req.query.page;
+        const limitRaw = req.query.limit;
+        const sortRaw = req.query.sort || req.query.sortBy || "sequence";
+        const sortOrderRaw = req.query.sortOrder || req.query.order || "asc";
 
         const userPopulate = {
             path: "userId",
@@ -631,25 +682,62 @@ export const getDeliveryBoard = async (req, res) => {
             allDeliveries = allDeliveries.filter(d => d.areaId === areaFilter);
         }
 
-        const subDeliveries = allDeliveries.filter(d => d.type === "subscription");
-        const orderDeliveriesFiltered = allDeliveries.filter(d => d.type === "order");
+        // Search across customerName/phone/email/productLabel/areaName/schedule/address
+        if (searchRaw && String(searchRaw).trim()) {
+          const q = String(searchRaw).toLowerCase().trim();
+          allDeliveries = allDeliveries.filter(d =>
+            (d.customerName || "").toLowerCase().includes(q) ||
+            (d.phone || "").toLowerCase().includes(q) ||
+            (d.email || "").toLowerCase().includes(q) ||
+            (d.productLabel || "").toLowerCase().includes(q) ||
+            (d.schedule || "").toLowerCase().includes(q) ||
+            (d.address || "").toLowerCase().includes(q) ||
+            (d.type || "").toLowerCase().includes(q) ||
+            (d.areaName || "").toLowerCase().includes(q)
+          );
+        }
 
-        allDeliveries.sort((a, b) => {
-            // Pending/actionable first
+        // Sorting: support sequence/name/canRecordOutcome via sort param
+        // Default is actionable first then sequence/name
+        if (sortRaw === "name") {
+          const dir = String(sortOrderRaw).toLowerCase() === "desc" ? -1 : 1;
+          allDeliveries.sort((a, b) => dir * (a.customerName || "").localeCompare(b.customerName || ""));
+        } else {
+          // default sequence sort with actionable priority
+          allDeliveries.sort((a, b) => {
             if (a.canRecordOutcome !== b.canRecordOutcome) {
-                return a.canRecordOutcome ? -1 : 1;
+              return a.canRecordOutcome ? -1 : 1;
             }
-            // Sort by sequence (nulls last), then by name
             if (a.sequence == null && b.sequence == null) return (a.customerName || "").localeCompare(b.customerName || "");
             if (a.sequence == null) return 1;
             if (b.sequence == null) return -1;
             return a.sequence - b.sequence;
-        });
+          });
+          if (String(sortOrderRaw).toLowerCase() === "desc" && sortRaw === "sequence") {
+            allDeliveries.reverse();
+          }
+        }
+
+        const subDeliveries = allDeliveries.filter(d => d.type === "subscription");
+        const orderDeliveriesFiltered = allDeliveries.filter(d => d.type === "order");
+
+        const total = allDeliveries.length;
+        const wantsPagination = pageRaw != null || limitRaw != null;
+        let pagedDeliveries = allDeliveries;
+        let paginationMeta = null;
+        if (wantsPagination) {
+          const { parsePagination, buildPaginationMeta } = await import("../utils/pagination.js");
+          const { page: p, limit: lim, skip } = parsePagination({ page: pageRaw, limit: limitRaw }, { defaultLimit: 50, maxLimit: 100 });
+          pagedDeliveries = allDeliveries.slice(skip, skip + lim);
+          paginationMeta = buildPaginationMeta(total, p, lim);
+        } else {
+          paginationMeta = { total, page: 1, limit: total || 1, totalPages: 1 };
+        }
 
         res.status(200).json({
             date: targetDate,
             summary: {
-                totalDeliveries: allDeliveries.length,
+                totalDeliveries: total,
                 subscriptionDeliveries: subDeliveries.length,
                 orderDeliveries: orderDeliveriesFiltered.length,
                 remainingDeliveries: allDeliveries.filter((item) => item.canRecordOutcome).length,
@@ -657,7 +745,8 @@ export const getDeliveryBoard = async (req, res) => {
                 exceptions: allDeliveries.filter((item) => ["skipped","partial","extra","failed"].includes(item.deliveryStatus)).length,
                 totalAmount: allDeliveries.reduce((sum, item) => sum + item.amount, 0),
             },
-            deliveries: allDeliveries,
+            deliveries: pagedDeliveries,
+            ...paginationMeta,
         });
     } catch (error) {
         console.error("Get Delivery Board Error:", error);

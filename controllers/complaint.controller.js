@@ -24,8 +24,31 @@ export const createComplaint = async (req, res) => {
 export const getMyComplaints = async (req, res) => {
   try {
     const userId = req.user._id;
-    const complaints = await Complaint.find({ userId }).sort({ createdAt: -1 });
-    res.status(200).json({ count: complaints.length, complaints });
+    const { page, limit, sortBy, sortOrder, search, status } = req.query;
+    const wantsPagination = page != null || limit != null || search || status || sortBy;
+    if (!wantsPagination) {
+      const complaints = await Complaint.find({ userId }).sort({ createdAt: -1 });
+      return res.status(200).json({ count: complaints.length, complaints, total: complaints.length, page: 1, limit: complaints.length || 1, totalPages: 1 });
+    }
+    const { parsePagination, buildPaginationMeta, escapeRegex } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 10, maxLimit: 50, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","status"] }
+    );
+    const filter = { userId };
+    if (status && status !== "all") filter.status = status;
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      filter.$or = [
+        { subject: { $regex: esc, $options: "i" } },
+        { description: { $regex: esc, $options: "i" } },
+      ];
+    }
+    const [complaints, total] = await Promise.all([
+      Complaint.find(filter).sort(sort).skip(skip).limit(lim).lean(),
+      Complaint.countDocuments(filter),
+    ]);
+    res.status(200).json({ complaints, count: total, total, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get My Complaints Error:", error);
     res.status(500).json({ message: "Failed to fetch complaints." });
@@ -47,14 +70,31 @@ export const getComplaintById = async (req, res) => {
 
 export const getAllComplaintsAdmin = async (req, res) => {
   try {
-    const { status, relatedTo } = req.query;
+    const { status, relatedTo, search, page, limit, sortBy, sortOrder } = req.query;
+    const { parsePagination, buildPaginationMeta, escapeRegex, buildSearchOr } = await import("../utils/pagination.js");
+    const { page: p, limit: lim, skip, sort } = parsePagination(
+      { page, limit, sortBy, sortOrder },
+      { defaultLimit: 20, maxLimit: 100, defaultSort: { createdAt: -1 }, allowedSortFields: ["createdAt","status","subject"] }
+    );
     const filter = {};
     if (status) filter.status = status;
     if (relatedTo) filter.relatedTo = relatedTo;
-    const complaints = await Complaint.find(filter)
-      .populate("userId", "name email phone")
-      .sort({ createdAt: -1 });
-    res.status(200).json({ count: complaints.length, complaints });
+    if (search) {
+      const esc = escapeRegex(search.trim());
+      // Search on complaint subject/description + populated user name/email via lookup
+      // For simplicity, apply regex on complaint fields and also include user search
+      const userIds = await (await import("../models/user.model.js")).default.find({ $or: buildSearchOr(esc, ["name","email","phone"]) }).select("_id").lean();
+      filter.$or = [
+        { subject: { $regex: esc, $options: "i" } },
+        { description: { $regex: esc, $options: "i" } },
+        ...(userIds.length ? [{ userId: { $in: userIds.map((u) => u._id) } }] : []),
+      ];
+    }
+    const [complaints, total] = await Promise.all([
+      Complaint.find(filter).populate("userId", "name email phone").sort(sort).skip(skip).limit(lim).lean(),
+      Complaint.countDocuments(filter),
+    ]);
+    res.status(200).json({ complaints, ...buildPaginationMeta(total, p, lim) });
   } catch (error) {
     console.error("Get All Complaints Admin Error:", error);
     res.status(500).json({ message: "Failed to fetch complaints." });
