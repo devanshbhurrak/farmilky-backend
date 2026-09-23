@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Invoice from "../models/invoice.model.js";
 import User from "../models/user.model.js";
 import {
@@ -57,6 +58,9 @@ export const listInvoicesAdmin = async (req, res) => {
 // ── Admin: Invoice detail ────────────────────────────────────────────────
 export const getInvoiceDetailAdmin = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid invoice ID." });
+    }
     const invoice = await Invoice.findById(req.params.id)
       .populate("userId", "name phone email accountBalance")
       .populate("generatedByUser", "name")
@@ -141,6 +145,9 @@ export const bulkGenerateInvoices = async (req, res) => {
 // ── Admin: Regenerate (void + recreate) ─────────────────────────────────
 export const regenerateInvoiceAdmin = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid invoice ID." });
+    }
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
@@ -168,6 +175,9 @@ export const regenerateInvoiceAdmin = async (req, res) => {
 // ── Admin: Update status ─────────────────────────────────────────────────
 export const updateInvoiceStatus = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid invoice ID." });
+    }
     const { status, voidReason } = req.body;
     const validStatuses = ["draft", "sent", "paid", "partially_paid", "overdue", "cancelled", "void"];
     if (!validStatuses.includes(status)) {

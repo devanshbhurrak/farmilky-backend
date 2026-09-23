@@ -56,6 +56,9 @@ export const getAllAreas = async (req, res) => {
 
 export const getAreaById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid area ID." });
+    }
     const area = await Area.findById(req.params.id).populate("assignedAgent", "name email phone");
     if (!area) return res.status(404).json({ message: "Area not found." });
     res.status(200).json({ area });
@@ -67,6 +70,9 @@ export const getAreaById = async (req, res) => {
 
 export const updateArea = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid area ID." });
+    }
     const { name, pincodes, localities, assignedAgent, isActive, sequence } = req.body;
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
@@ -105,6 +111,9 @@ export const updateArea = async (req, res) => {
 
 export const deleteArea = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid area ID." });
+    }
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
 
@@ -126,6 +135,9 @@ export const deleteArea = async (req, res) => {
 
 export const getAreaCustomers = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid area ID." });
+    }
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
 
@@ -161,6 +173,9 @@ export const getAreaCustomers = async (req, res) => {
 
 export const updateAreaCustomers = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid area ID." });
+    }
     const area = await Area.findById(req.params.id);
     if (!area) return res.status(404).json({ message: "Area not found." });
 

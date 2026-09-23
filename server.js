@@ -117,6 +117,13 @@ const contactLimiter = rateLimit({
 app.get("/", (req, res) => {
     res.send("Welcome to the Farmilky API!");
 })
+
+app.get("/health", (req, res) => {
+    const dbState = mongoose.connection.readyState;
+    const dbStatus = dbState === 1 ? "connected" : dbState === 2 ? "connecting" : "disconnected";
+    res.status(dbState === 1 ? 200 : 503).json({ status: dbState === 1 ? "ok" : "degraded", db: dbStatus });
+});
+
 app.use("/api/user", authLimiter, userRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/cart", cartRoutes);
@@ -151,8 +158,19 @@ app.use((err, req, res, next) => {
 
 if (process.env.NODE_ENV !== "production") {
     app.listen(PORT, () => {
-        console.log(`Server is running or PORT:${PORT}`)
+        console.log(`Server is running on PORT:${PORT}`)
     })
 }
+
+const shutdown = (signal) => {
+    console.log(`[shutdown] ${signal} received — closing server gracefully`);
+    mongoose.connection.close(false).then(() => {
+        console.log("[shutdown] MongoDB connection closed");
+        process.exit(0);
+    }).catch(() => process.exit(1));
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT",  () => shutdown("SIGINT"));
 
 export default app;

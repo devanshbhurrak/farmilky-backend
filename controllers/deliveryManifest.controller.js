@@ -63,6 +63,9 @@ export const getManifestsByDate = async (req, res) => {
 // GET /api/manifests/:id — full manifest detail
 export const getManifestById = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid manifest ID." });
+    }
     const manifest = await DeliveryManifest.findById(req.params.id)
       .populate("agentId", "name phone email")
       .populate("areaId", "name localities");
@@ -108,6 +111,9 @@ export const getMyManifestHistory = async (req, res) => {
 // PUT /api/manifests/:id/resequence — admin reorders manifest entries post-generation
 export const resequenceManifest = async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid manifest ID." });
+    }
     const { orderedEntryIds } = req.body;
     if (!Array.isArray(orderedEntryIds)) {
       return res.status(400).json({ message: "orderedEntryIds must be an array." });
