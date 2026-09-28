@@ -13,19 +13,22 @@ app.listen(4000);
 
 const handler = httpServerHandler({ port: 4000 });
 
-// Diagnostic fetch wrapper: on /health requests, if Mongoose is not connected,
-// attempt an explicit connection using the Worker env binding (env.MONGO_URI).
-// This surfaces whether the connection succeeds from inside the request lifecycle
-// and whether env bindings are reachable here, independent of module init.
-// connectDB() logs MONGO_URI presence, readyState, and any error — never the value.
-async function diagnosticFetch(request, env, ctx) {
-    const url = new URL(request.url);
-    if (url.pathname === "/health" && mongoose.connection.readyState !== 1) {
-        try {
-            await connectDB(env.MONGO_URI);
-        } catch (_err) {
-            // error details already logged inside connectDB
-        }
+// Ensures Mongoose is connected before the request reaches Express.
+// Uses mongoose.connection.readyState (Mongoose's own state) rather than a
+// mutable global flag. env.MONGO_URI is read per-request from the Worker env
+// binding and never stored in module-level state.
+async function ensureConnected(mongoUri) {
+    // readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
+    if (mongoose.connection.readyState === 1) return;
+    await connectDB(mongoUri);
+}
+
+async function workerFetch(request, env, ctx) {
+    try {
+        await ensureConnected(env.MONGO_URI);
+    } catch (_err) {
+        // connectDB already logged the error; let Express handle the degraded state
+        // (/health returns 503, DB-dependent routes will surface Mongoose errors)
     }
     return handler.fetch(request, env, ctx);
 }
@@ -81,4 +84,4 @@ async function scheduled(event, env, ctx) {
     }
 }
 
-export default { fetch: diagnosticFetch, scheduled };
+export default { fetch: workerFetch, scheduled };

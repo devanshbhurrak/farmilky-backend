@@ -39,7 +39,12 @@ validateEnv();
 
 const app = express();
 app.set("trust proxy", 1);
-connectDB()
+
+// Cloudflare Workers manages its own connection lifecycle in worker.js
+// (per-request via ensureConnected). Local and Vercel connect at startup.
+if (process.env.RUNTIME !== "cloudflare") {
+    connectDB(process.env.MONGO_URI);
+}
 const PORT = process.env.PORT || 4000
 
 // Ensure today's sheets exist even if the server restarts mid-day.

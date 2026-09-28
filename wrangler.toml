@@ -10,6 +10,7 @@ preview_urls = true
 
 [vars]
 NODE_ENV     = "production"
+RUNTIME      = "cloudflare"
 FRONTEND_URL = "[\"https://farmilky.vercel.app\", \"https://farmilky-management.vercel.app\"]"
 UPI_ID               = "9424547907@slc"
 UPI_NAME             = "Farmilky"
