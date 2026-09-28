@@ -1,11 +1,14 @@
 import mongoose from "mongoose";
 
-export const connectDB = async () => {
+// uri is optional: caller can pass env.MONGO_URI explicitly (Workers fetch
+// lifecycle) or omit to fall back to process.env.MONGO_URI (local / Vercel).
+export const connectDB = async (uri) => {
+  const mongoUri = uri ?? process.env.MONGO_URI;
   console.log("[db] connectDB called");
-  console.log("[db] MONGO_URI present:", !!process.env.MONGO_URI);
+  console.log("[db] MONGO_URI present:", !!mongoUri);
   console.log("[db] readyState before connect:", mongoose.connection.readyState);
   try {
-    await mongoose.connect(process.env.MONGO_URI, {
+    await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 5000,
     });

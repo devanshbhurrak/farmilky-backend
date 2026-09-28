@@ -3,13 +3,32 @@
 // server.js is unchanged — local dev still works via `node server.js`.
 
 import { httpServerHandler } from "cloudflare:node";
+import mongoose from "mongoose";
 import app from "./server.js";
+import { connectDB } from "./config/db.js";
 
 // In Workers, app.listen() does not open a real TCP port.
 // The port number is a routing key that must match the httpServerHandler call below.
 app.listen(4000);
 
 const handler = httpServerHandler({ port: 4000 });
+
+// Diagnostic fetch wrapper: on /health requests, if Mongoose is not connected,
+// attempt an explicit connection using the Worker env binding (env.MONGO_URI).
+// This surfaces whether the connection succeeds from inside the request lifecycle
+// and whether env bindings are reachable here, independent of module init.
+// connectDB() logs MONGO_URI presence, readyState, and any error — never the value.
+async function diagnosticFetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname === "/health" && mongoose.connection.readyState !== 1) {
+        try {
+            await connectDB(env.MONGO_URI);
+        } catch (_err) {
+            // error details already logged inside connectDB
+        }
+    }
+    return handler.fetch(request, env, ctx);
+}
 
 // Cloudflare Cron Triggers — replaces node-cron.
 // Each cron expression matches a trigger defined in wrangler.toml [triggers].
@@ -62,4 +81,4 @@ async function scheduled(event, env, ctx) {
     }
 }
 
-export default { fetch: handler.fetch, scheduled };
+export default { fetch: diagnosticFetch, scheduled };
