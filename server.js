@@ -100,10 +100,20 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
+// In Cloudflare Workers, req.socket is null so req.ip throws inside
+// express-rate-limit's default keyGenerator. Read cf-connecting-ip first
+// (set by Cloudflare on every request), fall back to x-real-ip, then req.ip.
+const getClientIp = (req) =>
+    req.headers["cf-connecting-ip"] ||
+    req.headers["x-real-ip"] ||
+    req.ip ||
+    "unknown";
+
 // Rate Limiting for Auth
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // limit each IP to 100 requests per windowMs
+    keyGenerator: getClientIp,
     message: { message: "Too many requests from this IP, please try again after 15 minutes" }
 });
 
@@ -111,6 +121,7 @@ const authLimiter = rateLimit({
 const contactLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 5, // 5 submissions per IP per hour
+    keyGenerator: getClientIp,
     message: { message: "Too many messages sent. Please try again later." }
 });
 
