@@ -7,3 +7,10 @@ compatibility_date = "2026-09-28"
 
 [vars]
 NODE_ENV = "production"
+
+[triggers]
+crons = [
+  "0 0 * * *",   # daily delivery + manifest generation (midnight)
+  "0 21 * * *",  # end-of-day manifest close (9 PM)
+  "0 1 1 * *",   # monthly invoice generation (1 AM on 1st)
+]

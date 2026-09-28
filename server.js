@@ -32,7 +32,6 @@ import invoiceRoutes from "./routes/invoice.routes.js";
 import upiRedirectRoutes from "./routes/upiRedirect.routes.js";
 import expenseRoutes from "./routes/expense.routes.js";
 
-import initScheduler from "./services/scheduler.js";
 import { runDailyManifestGenerationJob } from "./services/manifestService.js";
 
 dotenv.config()
@@ -76,10 +75,6 @@ if (mongoose.connection.readyState === 1) {
         ensureSparseEmailIndex();
         runStartupManifestGeneration();
     });
-}
-
-if (process.env.ENABLE_LOCAL_SCHEDULER === "true" && process.env.NODE_ENV !== "production") {
-    initScheduler();
 }
 
 app.use(cors({

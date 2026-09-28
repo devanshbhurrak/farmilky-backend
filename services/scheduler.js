@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import Subscription from "../models/subscription.model.js";
 import DeliveryManifest from "../models/deliveryManifest.model.js";
 import Holiday from "../models/holiday.model.js";
@@ -249,55 +248,3 @@ export const runEndOfDayJob = async () => {
   return { autoMarkedCount };
 };
 
-const initScheduler = () => {
-  console.log("Local scheduler enabled.");
-
-  cron.schedule("0 0 * * *", async () => {
-    try {
-      await runDailyDeliveryJob();
-    } catch (error) {
-      console.error("Daily delivery job failed:", error);
-    }
-  });
-
-  // End-of-day at 21:00 — mark unattempted deliveries as failed
-  cron.schedule("0 21 * * *", async () => {
-    try {
-      await runEndOfDayJob();
-    } catch (error) {
-      console.error("End-of-day job failed:", error);
-    }
-  });
-
-  // Generate/refresh today's manifests at 00:05, after the maintenance job above,
-  // so sheets exist before agents log in. Late orders/subscriptions are appended
-  // to active sheets, keeping the day's route fresh without manual intervention.
-  cron.schedule("5 0 * * *", async () => {
-    try {
-      const { runDailyManifestGenerationJob } = await import("./manifestService.js");
-      await runDailyManifestGenerationJob();
-    } catch (error) {
-      console.error("Daily manifest generation job failed:", error);
-    }
-  });
-
-  // Monthly invoice generation: 1 AM on the 1st of every month (generates previous month's invoices)
-  cron.schedule("0 1 1 * *", async () => {
-    console.log("[Scheduler] Running monthly invoice generation...");
-    const now = new Date();
-    let month = now.getMonth(); // previous month (1-indexed)
-    let year = now.getFullYear();
-    if (month === 0) { month = 12; year -= 1; }
-    try {
-      const { generateBulkInvoices, markOverdueInvoices } = await import("./invoiceService.js");
-      const { marked } = await markOverdueInvoices();
-      if (marked > 0) console.log(`[Scheduler] Marked ${marked} invoices as overdue.`);
-      const results = await generateBulkInvoices(month, year, { generatedBy: "system" });
-      console.log(`[Scheduler] Monthly invoices: ${results.generated} generated, ${results.skipped} skipped, ${results.errors.length} errors.`);
-    } catch (err) {
-      console.error("[Scheduler] Monthly invoice generation failed:", err);
-    }
-  });
-};
-
-export default initScheduler;
