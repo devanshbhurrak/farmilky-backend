@@ -1,9 +1,10 @@
 name = "farmilky-backend"
 main = "worker.js"
 compatibility_date = "2026-09-28"
-
-# nodejs_compat is enabled by default for compatibility_date >= 2026-08-04,
-# so it does not need to be listed explicitly here.
+compatibility_flags = ["nodejs_compat"]
+# nodejs_compat is the runtime default for this date, but must also be listed
+# explicitly so Wrangler tells esbuild to use Node.js module resolution conditions
+# during bundling — without it, esbuild picks mongoose's browser bundle.
 
 [vars]
 NODE_ENV = "production"

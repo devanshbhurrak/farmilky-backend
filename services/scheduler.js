@@ -247,4 +247,3 @@ export const runEndOfDayJob = async () => {
   console.log("End-of-day job completed.");
   return { autoMarkedCount };
 };
-

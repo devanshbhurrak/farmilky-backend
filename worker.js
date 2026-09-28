@@ -13,28 +13,48 @@ const handler = httpServerHandler({ port: 4000 });
 
 // Cloudflare Cron Triggers — replaces node-cron.
 // Each cron expression matches a trigger defined in wrangler.toml [triggers].
-async function scheduled(event) {
+// Jobs run independently: a failure in one does not prevent the others from executing.
+async function scheduled(event, env, ctx) {
     switch (event.cron) {
         case "0 0 * * *": {
             const { runDailyDeliveryJob } = await import("./services/scheduler.js");
             const { runDailyManifestGenerationJob } = await import("./services/manifestService.js");
-            await runDailyDeliveryJob();
-            await runDailyManifestGenerationJob();
+            try {
+                await runDailyDeliveryJob();
+            } catch (err) {
+                console.error("[cron] Daily delivery job failed:", err);
+            }
+            try {
+                await runDailyManifestGenerationJob();
+            } catch (err) {
+                console.error("[cron] Daily manifest generation failed:", err);
+            }
             break;
         }
         case "0 21 * * *": {
             const { runEndOfDayJob } = await import("./services/scheduler.js");
-            await runEndOfDayJob();
+            try {
+                await runEndOfDayJob();
+            } catch (err) {
+                console.error("[cron] End-of-day job failed:", err);
+            }
             break;
         }
         case "0 1 1 * *": {
-            const { generateBulkInvoices, markOverdueInvoices } = await import("./services/invoiceService.js");
-            const now = new Date();
-            let month = now.getMonth(); // 0-indexed current = 1-indexed previous month
-            let year = now.getFullYear();
-            if (month === 0) { month = 12; year -= 1; }
-            await markOverdueInvoices();
-            await generateBulkInvoices(month, year, { generatedBy: "system" });
+            // markOverdueInvoices and generateBulkInvoices share one try/catch,
+            // preserving original scheduler semantics: if markOverdueInvoices fails,
+            // generateBulkInvoices does not execute for that run.
+            try {
+                const { generateBulkInvoices, markOverdueInvoices } = await import("./services/invoiceService.js");
+                const now = new Date();
+                let month = now.getMonth(); // 0-indexed current = 1-indexed previous month
+                let year = now.getFullYear();
+                if (month === 0) { month = 12; year -= 1; }
+                await markOverdueInvoices();
+                await generateBulkInvoices(month, year, { generatedBy: "system" });
+            } catch (err) {
+                console.error("[cron] Monthly invoice job failed:", err);
+            }
             break;
         }
         default:
