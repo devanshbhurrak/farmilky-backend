@@ -2,6 +2,8 @@ name = "farmilky-backend"
 main = "worker.js"
 compatibility_date = "2026-09-28"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = true
 # nodejs_compat is the runtime default for this date, but must also be listed
 # explicitly so Wrangler tells esbuild to use Node.js module resolution conditions
 # during bundling — without it, esbuild picks mongoose's browser bundle.
@@ -11,6 +13,10 @@ NODE_ENV     = "production"
 FRONTEND_URL = "[\"https://farmilky.vercel.app\", \"https://farmilky-management.vercel.app\"]"
 UPI_ID               = "9424547907@slc"
 UPI_NAME             = "Farmilky"
+
+[observability.logs]
+enabled = true
+invocation_logs = true
 
 [triggers]
 crons = [
