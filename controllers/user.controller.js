@@ -1,4 +1,4 @@
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import User from "../models/user.model.js";
 import Order from "../models/order.model.js";
 import Subscription from "../models/subscription.model.js";
