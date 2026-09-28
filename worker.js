@@ -13,13 +13,25 @@ app.listen(4000);
 
 const handler = httpServerHandler({ port: 4000 });
 
-// Ensures Mongoose is connected before the request reaches Express.
+// Ensures Mongoose is connected before handing off to Express or a cron job.
 // Uses mongoose.connection.readyState (Mongoose's own state) rather than a
-// mutable global flag. env.MONGO_URI is read per-request from the Worker env
-// binding and never stored in module-level state.
+// mutable global flag. env.MONGO_URI is read from the Worker env binding and
+// never stored in module-level state.
+//
+// readyState values: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
 async function ensureConnected(mongoUri) {
-    // readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
     if (mongoose.connection.readyState === 1) return;
+
+    // Another async path already called mongoose.connect() — wait for it
+    // rather than issuing a second connect call.
+    if (mongoose.connection.readyState === 2) {
+        await new Promise((resolve, reject) => {
+            mongoose.connection.once("connected", resolve);
+            mongoose.connection.once("error", reject);
+        });
+        return;
+    }
+
     await connectDB(mongoUri);
 }
 
@@ -37,6 +49,13 @@ async function workerFetch(request, env, ctx) {
 // Each cron expression matches a trigger defined in wrangler.toml [triggers].
 // Jobs run independently: a failure in one does not prevent the others from executing.
 async function scheduled(event, env, ctx) {
+    try {
+        await ensureConnected(env.MONGO_URI);
+    } catch (err) {
+        console.error("[cron] DB connection failed, aborting scheduled job:", err.name, "-", err.message);
+        return;
+    }
+
     switch (event.cron) {
         case "0 0 * * *": {
             const { runDailyDeliveryJob } = await import("./services/scheduler.js");
