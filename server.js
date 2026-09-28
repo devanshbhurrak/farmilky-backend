@@ -100,17 +100,27 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
-// In Cloudflare Workers, req.socket is null so req.ip throws inside
-// express-rate-limit's default keyGenerator. Read cf-connecting-ip first
-// (set by Cloudflare on every request), fall back to x-real-ip, then req.ip.
-const getClientIp = (req) =>
-    req.headers["cf-connecting-ip"] ||
-    req.headers["x-real-ip"] ||
-    req.ip ||
-    "unknown";
+// In Cloudflare Workers, req.socket is null — req.ip reads req.socket.remoteAddress
+// and throws. On the Cloudflare path, read only from headers (never req.ip/req.socket).
+const getClientIp = (req) => {
+    if (process.env.RUNTIME === "cloudflare") {
+        return req.get("CF-Connecting-IP")
+            || req.get("X-Real-IP")
+            || "unknown";
+    }
+    return req.ip || "unknown";
+};
+
+// Temporary diagnostic: bypass express-rate-limit on Cloudflare Workers to
+// isolate whether the in-memory limiter is the source of request hangs.
+// If login/profile work without it, express-rate-limit v8 MemoryStore is
+// incompatible with this Worker path and must be replaced (e.g. CF Rate Limiting).
+// DO NOT keep this bypass as a permanent solution.
+const workerBypass = (_req, _res, next) => next();
+const isCloudflare = process.env.RUNTIME === "cloudflare";
 
 // Rate Limiting for Auth
-const authLimiter = rateLimit({
+const authLimiter = isCloudflare ? workerBypass : rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // limit each IP to 100 requests per windowMs
     keyGenerator: getClientIp,
@@ -118,7 +128,7 @@ const authLimiter = rateLimit({
 });
 
 // Rate Limiting for public contact form (stricter — creates DB documents)
-const contactLimiter = rateLimit({
+const contactLimiter = isCloudflare ? workerBypass : rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 5, // 5 submissions per IP per hour
     keyGenerator: getClientIp,
@@ -135,7 +145,13 @@ app.get("/health", (req, res) => {
     res.status(dbState === 1 ? 200 : 503).json({ status: dbState === 1 ? "ok" : "degraded", db: dbStatus });
 });
 
-app.use("/api/user", authLimiter, userRoutes);
+app.use("/api/user", (req, _res, next) => {
+    console.log("[rate-limit] auth before", req.method, req.path);
+    next();
+}, authLimiter, (req, _res, next) => {
+    console.log("[rate-limit] auth key resolved");
+    next();
+}, userRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/order", orderRoutes);

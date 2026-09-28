@@ -9,7 +9,7 @@ router.post("/register", registerUser);
 router.post("/login", loginUser);
 router.post("/logout", authMiddleware, logoutUser);
 router.put("/profile", authMiddleware, updateProfile);
-router.get("/profile", authMiddleware, getUserProfile);
+router.get("/profile", (req, _res, next) => { console.log("[rate-limit] profile route reached"); next(); }, authMiddleware, getUserProfile);
 router.get("/admin/all", authMiddleware, adminOnly, getAllUsersAdmin);
 router.get("/admin/:id", authMiddleware, adminOnly, getUserByIdAdmin);
 router.post("/admin/create", authMiddleware, adminOnly, createUserAdmin);
