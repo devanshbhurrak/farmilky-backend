@@ -1,0 +1,9 @@
+name = "farmilky-api"
+main = "worker.js"
+compatibility_date = "2026-09-28"
+
+# nodejs_compat is enabled by default for compatibility_date >= 2026-08-04,
+# so it does not need to be listed explicitly here.
+
+[vars]
+NODE_ENV = "production"
