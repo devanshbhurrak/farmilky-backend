@@ -7,6 +7,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
+    "postinstall": "node scripts/patch-mongoose.cjs",
     "dev": "nodemon server.js",
     "start": "node server.js",
     "dedupe:manifests": "node scripts/dedupeManifests.js",
