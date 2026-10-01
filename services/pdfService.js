@@ -188,7 +188,9 @@ export async function generateInvoicePDF(invoice, {
   return new Promise((resolve, reject) => {
     const M   = 30;                          // page margin
     const doc = new PDFDocument({
-      margin: M, size: "A4",
+      // bottom: 0 so PDFKit never auto-paginates when we draw the pinned footer
+      margins: { top: M, left: M, right: M, bottom: 0 },
+      size: "A4",
       autoFirstPage: true,
       info: {
         Title:   `Invoice ${invoice.invoiceNumber}`,
@@ -207,8 +209,9 @@ export async function generateInvoicePDF(invoice, {
     doc.on("error", reject);
 
     // ── Page geometry ──────────────────────────────────────────────────────
-    // Content must stay above SAFE_BOTTOM (bottom margin + breathing room).
-    const SAFE_BOTTOM = PH - M - 16;            // ~795.89
+    // Footer is pinned to page bottom; content must stop above it.
+    const FOOT_H    = 26;
+    const SAFE_BOTTOM = PH - FOOT_H - 6;   // content stops here on every page
 
     let y = 0; // current vertical cursor
 
@@ -220,6 +223,50 @@ export async function generateInvoicePDF(invoice, {
     function addPageIfNeeded(needed) {
       if (y + needed > SAFE_BOTTOM) { newPage(); return true; }
       return false;
+    }
+
+    // Draw a small filled heart using bezier curves.
+    // cx/cy = center, r = half-height (~5pt works well for footer).
+    function drawHeart(cx, cy, r, color) {
+      doc.save()
+        .fillColor(color)
+        .moveTo(cx,           cy + r)
+        .bezierCurveTo(cx - r * 0.35, cy + r * 0.55,
+                       cx - r,        cy + r * 0.15,
+                       cx - r,        cy - r * 0.15)
+        .bezierCurveTo(cx - r,        cy - r * 0.65,
+                       cx - r * 0.35, cy - r,
+                       cx,            cy - r * 0.55)
+        .bezierCurveTo(cx + r * 0.35, cy - r,
+                       cx + r,        cy - r * 0.65,
+                       cx + r,        cy - r * 0.15)
+        .bezierCurveTo(cx + r,        cy + r * 0.15,
+                       cx + r * 0.35, cy + r * 0.55,
+                       cx,            cy + r)
+        .closePath().fill()
+        .restore();
+    }
+
+    // Footer — pinned to the very bottom of whatever page is current.
+    // bottom margin is 0 so PDFKit will not auto-paginate here.
+    function drawFooter() {
+      const fy    = PH - FOOT_H;
+      const mid   = PW / 2;
+      const hR    = 4.5;           // heart radius
+      const gap   = 52;            // offset from centre to each heart
+
+      // Background band
+      doc.save().rect(0, fy, PW, FOOT_H).fill(C.greenDark).restore();
+
+      // Text
+      doc.fillColor(C.greenSubtle).font("Helvetica-Bold").fontSize(8)
+        .text("Pure Milk, Pure Promise", M, fy + 9,
+          { width: W, align: "center", lineBreak: false });
+
+      // Hearts flanking the text (drawn after text so they sit on top)
+      const heartY = fy + FOOT_H / 2 - 1;
+      drawHeart(mid - gap, heartY, hR, C.greenSubtle);
+      drawHeart(mid + gap, heartY, hR, C.greenSubtle);
     }
 
     // ── S1: Header band ─────────────────────────────────────────────────────
@@ -411,7 +458,7 @@ export async function generateInvoicePDF(invoice, {
     if (netDue <= 0) {
       addPageIfNeeded(13);
       doc.fillColor(C.settled).font("Helvetica-Bold").fontSize(7.2)
-        .text("\u2713 Account fully settled", SUM_LX, y, { width: W - 24, lineBreak: false });
+        .text("Account fully settled", SUM_LX, y, { width: W - 24, lineBreak: false });
       y += 12;
     }
 
@@ -603,7 +650,7 @@ export async function generateInvoicePDF(invoice, {
         doc.fillColor(C.muted).font("Helvetica").fontSize(7.2)
           .text(qtyStr, dCols[2].x, cy, { width: dCols[2].w - 3, align: "right", lineBreak: false });
 
-        const amtPrefix = isCr ? "+" : "\u2212";
+        const amtPrefix = isCr ? "+" : "-";
         doc.fillColor(isCr ? C.credit : C.debit).font("Helvetica-Bold").fontSize(7.2)
           .text(`${amtPrefix}${fmt(item.amount)}`, dCols[3].x, cy,
             { width: dCols[3].w - 3, align: "right", lineBreak: false });
@@ -655,37 +702,40 @@ export async function generateInvoicePDF(invoice, {
     // Reserve enough height before page-breaking
     // When paid: show a thank-you card instead of payment instructions
     if (invoice.status === "paid") {
-      addPageIfNeeded(80);
+      addPageIfNeeded(108);
       y = titleBar(doc, M, W, y, "PAYMENT STATUS");
       y += 10;
 
-      const tyH = 58;
-      doc.save().roundedRect(M, y, W, tyH, 4)
-        .fill(C.surfaceMuted).restore();
-      doc.save().roundedRect(M, y, W, tyH, 4)
-        .strokeColor(C.greenBorder).lineWidth(0.8).stroke().restore();
+      const tyH = 84;
 
-      doc.fillColor(C.settled).font("Helvetica-Bold").fontSize(18)
-        .text("\u2713", M, y + 10, { width: W, align: "center", lineBreak: false });
-      doc.fillColor(C.greenDark).font("Helvetica-Bold").fontSize(11)
-        .text("Thank You! This invoice has been fully settled.", M, y + 30,
+      // Card fill
+      doc.save().roundedRect(M, y, W, tyH, 5).fill(C.surfaceMuted).restore();
+      // Dashed border — approximate with short strokes
+      doc.save().roundedRect(M, y, W, tyH, 5)
+        .dash(5, { space: 4 }).strokeColor(C.greenBorder).lineWidth(1).stroke()
+        .undash().restore();
+
+      // Heart icon (drawn, not a character)
+      drawHeart(M + W / 2, y + 20, 9, C.greenAccent);
+
+      // "Thank You!" heading
+      doc.fillColor(C.greenDark).font("Helvetica-Bold").fontSize(14)
+        .text("Thank You!", M, y + 34, { width: W, align: "center", lineBreak: false });
+
+      // Subtitle
+      doc.fillColor(C.text).font("Helvetica").fontSize(8.5)
+        .text("This invoice has been fully settled.", M, y + 52,
           { width: W, align: "center", lineBreak: false });
-      if (invoice.paidAt) {
-        doc.fillColor(C.muted).font("Helvetica").fontSize(7.6)
-          .text(`Paid on ${fmtDate(invoice.paidAt)}  \u2014  Farmilky Team`, M, y + 45,
-            { width: W, align: "center", lineBreak: false });
-      }
+
+      // Paid date + team line
+      const dateLine = invoice.paidAt
+        ? `Paid on ${fmtDate(invoice.paidAt)}  |  Farmilky Team`
+        : "Farmilky Team";
+      doc.fillColor(C.muted).font("Helvetica").fontSize(7.4)
+        .text(dateLine, M, y + 67, { width: W, align: "center", lineBreak: false });
+
       y += tyH + 14;
-
-      // Footer — mirrors .inv-doc-footer
-      const FOOT_H_P = 26;
-      addPageIfNeeded(FOOT_H_P + 8);
-      y += 6;
-      doc.save().rect(0, y, PW, FOOT_H_P).fill(C.greenDark).restore();
-      doc.fillColor(C.greenSubtle).font("Helvetica-Bold").fontSize(7.8)
-        .text("\u2665  Pure Milk, Pure Promise  \u2665", M, y + 8,
-          { width: W, align: "center", lineBreak: false });
-
+      drawFooter();
       doc.end();
       return;
     }
@@ -778,7 +828,7 @@ export async function generateInvoicePDF(invoice, {
           .fill(C.green).restore();
         // Label
         doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(9)
-          .text("Pay via UPI  \u2192", MID_L, midY + 9.5,
+          .text("Pay via UPI  >>", MID_L, midY + 9.5,
             { width: tapW, align: "center", lineBreak: false });
         // Link annotation covers the entire button area
         doc.link(MID_L, midY, tapW, tapH, tapLink);
@@ -845,15 +895,7 @@ export async function generateInvoicePDF(invoice, {
     }
     // else: no UPI and no phone — skip payment section entirely
 
-    // ── Footer — mirrors .inv-doc-footer ────────────────────────────────────
-    const FOOT_H = 26;
-    addPageIfNeeded(FOOT_H + 8);
-    y += 6;
-    doc.save().rect(0, y, PW, FOOT_H).fill(C.greenDark).restore();
-    doc.fillColor(C.greenSubtle).font("Helvetica-Bold").fontSize(7.8)
-      .text("\u2665  Pure Milk, Pure Promise  \u2665", M, y + 8,
-        { width: W, align: "center", lineBreak: false });
-
+    drawFooter();
     doc.end();
   });
 }
