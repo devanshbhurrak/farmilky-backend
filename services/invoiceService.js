@@ -37,7 +37,11 @@ async function getPreviousBalance(userId, month, year) {
     ],
   }).sort({ "billingPeriod.year": -1, "billingPeriod.month": -1 });
 
-  return prior ? prior.netAmountDue : 0;
+  if (!prior) return 0;
+  // If the prior invoice is fully paid, there's no outstanding balance to carry forward.
+  // (netAmountDue may be stale if the payment sync ran on a newer invoice instead.)
+  if (prior.status === "paid" && prior.netAmountDue >= 0) return 0;
+  return prior.netAmountDue;
 }
 
 /**
@@ -334,8 +338,19 @@ export async function syncInvoiceStatusAfterPayment(userId) {
     // Use stored orderCredits (defaults to 0 for invoices generated before this field was added)
     const orderCredits = invoice.orderCredits ?? 0;
 
+    // Re-fetch the live previous balance in case the prior invoice was paid after
+    // this invoice was generated (stale stored previousBalance would inflate netAmountDue)
+    const livePreviousBalance = await getPreviousBalance(
+      userId,
+      invoice.billingPeriod.month,
+      invoice.billingPeriod.year
+    );
+    if (livePreviousBalance !== invoice.previousBalance) {
+      invoice.previousBalance = livePreviousBalance;
+    }
+
     const newNet = Math.round(
-      (invoice.previousBalance + invoice.totalCharges - orderCredits - totalPayments + totalAdjustments) * 100
+      (livePreviousBalance + invoice.totalCharges - orderCredits - totalPayments + totalAdjustments) * 100
     ) / 100;
 
     invoice.totalPayments = Math.round(totalPayments * 100) / 100;
