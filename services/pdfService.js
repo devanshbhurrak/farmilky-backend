@@ -19,21 +19,30 @@ const BRAND = {
 
 // ── Color palette — matches portal invoices.css ───────────────────────────────
 const C = {
-  greenDark:    "#1a4731",
-  green:        "#2d6a4f",
-  greenLight:   "#f0faf4",
-  greenBorder:  "#9ecfb4",
-  greenText:    "#7dbf9a",
-  greenSubtle:  "#b2d8c4",
-  red:          "#991b1b",
-  text:         "#0f172a",
-  muted:        "#64748b",
-  border:       "#e2e8f0",
-  borderMid:    "#cbd5e1",
-  white:        "#ffffff",
-  rowAlt:       "#f8fafc",
-  bgAlt:        "#f1f5f9",
-  surfaceMuted: "#f1f5f9",
+  // Brand greens
+  greenDark:      "#1a4731",   // header / footer background
+  green:          "#3d7a5c",   // accents, buttons, box headers
+  greenLight:     "#f0f7f3",   // light tint backgrounds
+  greenBorder:    "#b8d9c7",   // borders, dividers
+  greenText:      "#7dbf9a",   // text on dark green header
+  greenSubtle:    "#b2d8c4",   // subtle text on dark header
+  greenTitleBg:   "#f0f7f3",   // section title background
+  greenTitleText: "#1a4731",   // section title text
+  greenAccent:    "#3d7a5c",   // section title left bar / box header fill
+  // Amount colours — match web inv-amount-* classes
+  credit:         "#1e6642",   // credit / paid amounts (inv-amount-credit)
+  settled:        "#1a5c38",   // net settled amount (inv-amount-settled)
+  debit:          "#b91c1c",   // debit amounts (inv-amount-debit)
+  due:            "#9a1c1c",   // net amount due (inv-amount-due)
+  // Neutral
+  text:           "#0f172a",
+  muted:          "#64748b",
+  border:         "#e8ede9",
+  borderMid:      "#c4dfd0",
+  white:          "#ffffff",
+  rowAlt:         "#f8fbf9",
+  bgAlt:          "#f1f5f9",
+  surfaceMuted:   "#f4fbf7",
 };
 
 // ── Status labels & badge colors ─────────────────────────────────────────────
@@ -86,14 +95,17 @@ function rule(doc, x, y, w, color = C.border, lw = 0.5) {
 }
 
 /**
- * Full-width green section title bar — mirrors .inv-doc-section-title
- * Portal: padding 5px + font 10px + 5px → ~22px total height.
+ * Section title bar — mirrors .inv-doc-section-title (tinted, not solid block)
+ * Light green background + dark green text + left accent bar.
  */
 function titleBar(doc, M, W, y, label) {
-  const H = 22;
-  doc.save().roundedRect(M, y, W, H, 1.5).fill(C.green).restore();
-  doc.fillColor(C.white).font("Helvetica-Bold").fontSize(7.6)
-    .text(label, M + 9, y + 6.8, { width: W - 18, lineBreak: false });
+  const H = 20;
+  // Light tinted background
+  doc.save().roundedRect(M, y, W, H, 2).fill(C.greenTitleBg).restore();
+  // Left accent bar
+  doc.save().rect(M, y, 3, H).fill(C.greenAccent).restore();
+  doc.fillColor(C.greenTitleText).font("Helvetica-Bold").fontSize(7.4)
+    .text(label, M + 10, y + 6, { width: W - 18, lineBreak: false });
   return y + H;
 }
 
@@ -240,6 +252,16 @@ export async function generateInvoicePDF(invoice, {
       .text(STATUS_LABELS[sk] || sk.toUpperCase(), sX, sY + 4.8,
         { width: sW, align: "center", lineBreak: false });
 
+    // ── PAID watermark ──────────────────────────────────────────────────────
+    if (invoice.status === "paid") {
+      doc.save();
+      doc.rotate(-45, { origin: [PW / 2, PH / 2] });
+      doc.fillColor("#16a34a").fillOpacity(0.055)
+        .font("Helvetica-Bold").fontSize(148)
+        .text("PAID", 0, PH / 2 - 74, { width: PW, align: "center", lineBreak: false });
+      doc.restore();
+    }
+
     y = HDR_H + 10;
 
     // ── S2: Customer Details | Invoice Meta ──────────────────────────────────
@@ -293,8 +315,8 @@ export async function generateInvoicePDF(invoice, {
     doc.save().roundedRect(LX, y, COL_W, INFO_H, 3)
       .strokeColor(C.border).lineWidth(0.6).stroke().restore();
     doc.save()
-      .roundedRect(LX, y, COL_W, BOX_HDR_H, 3).fill(C.green);
-    doc.rect(LX, y + BOX_HDR_H - 3, COL_W, 3).fill(C.green);
+      .roundedRect(LX, y, COL_W, BOX_HDR_H, 3).fill(C.greenAccent);
+    doc.rect(LX, y + BOX_HDR_H - 3, COL_W, 3).fill(C.greenAccent);
     doc.restore();
     rule(doc, LX, y + BOX_HDR_H, COL_W, C.greenBorder, 0.5);
     doc.fillColor(C.white).font("Helvetica-Bold").fontSize(7.2)
@@ -348,21 +370,21 @@ export async function generateInvoicePDF(invoice, {
         invoice.previousBalance > 0
           ? fmt(invoice.previousBalance)
           : fmtC(Math.abs(invoice.previousBalance)),
-        { color: invoice.previousBalance > 0 ? C.red : C.green, bold: true },
+        { color: invoice.previousBalance > 0 ? C.debit : C.credit, bold: true },
       );
     }
     drawSummaryRow("Total Charges", fmt(invoice.totalCharges));
     if ((invoice.orderCredits ?? 0) > 0) {
-      drawSummaryRow("Order Credits", fmtC(invoice.orderCredits), { color: C.green });
+      drawSummaryRow("Order Credits", fmtC(invoice.orderCredits), { color: C.credit });
     }
-    drawSummaryRow("Payments Received", fmtC(invoice.totalPayments), { color: C.green });
+    drawSummaryRow("Payments Received", fmtC(invoice.totalPayments), { color: C.credit });
     if ((invoice.totalAdjustments ?? 0) !== 0) {
       drawSummaryRow(
         "Adjustments",
         invoice.totalAdjustments < 0
           ? fmtC(Math.abs(invoice.totalAdjustments))
           : fmt(invoice.totalAdjustments),
-        { color: invoice.totalAdjustments < 0 ? C.green : C.text },
+        { color: invoice.totalAdjustments < 0 ? C.credit : C.debit },
       );
     }
 
@@ -373,7 +395,7 @@ export async function generateInvoicePDF(invoice, {
 
     addPageIfNeeded(22);
     const netDue   = invoice.netAmountDue ?? 0;
-    const netColor = netDue <= 0 ? C.green : C.red;
+    const netColor = netDue <= 0 ? C.settled : C.due;
     const netValue = netDue < 0
       ? fmtC(Math.abs(netDue))  // credit balance → parenthetical
       : fmt(netDue);             // zero or positive
@@ -388,8 +410,8 @@ export async function generateInvoicePDF(invoice, {
 
     if (netDue <= 0) {
       addPageIfNeeded(13);
-      doc.fillColor(C.green).font("Helvetica-Bold").fontSize(7.2)
-        .text("Account fully settled — thank you!", SUM_LX, y, { width: W - 24, lineBreak: false });
+      doc.fillColor(C.settled).font("Helvetica-Bold").fontSize(7.2)
+        .text("\u2713 Account fully settled", SUM_LX, y, { width: W - 24, lineBreak: false });
       y += 12;
     }
 
@@ -415,11 +437,12 @@ export async function generateInvoicePDF(invoice, {
         { label: "OUTSTANDING", x: M + 426,  w: W - 426,  align: "right" },
       ];
 
-      // Draw the green column-header row (repeatable on page breaks)
+      // Draw the tinted column-header row (repeatable on page breaks)
       const drawProdHeader = (yy) => {
-        doc.save().rect(M, yy, W, 19).fill(C.green).restore();
+        doc.save().rect(M, yy, W, 19).fill(C.greenTitleBg).restore();
+        doc.save().rect(M, yy + 19, W, 1).fill(C.borderMid).restore();
         pCols.forEach(col => {
-          doc.fillColor(C.white).font("Helvetica-Bold").fontSize(6.4)
+          doc.fillColor(C.greenTitleText).font("Helvetica-Bold").fontSize(6.4)
             .text(col.label, col.x + 2, yy + 6,
               { width: col.w - 4, align: col.align, lineBreak: false });
         });
@@ -439,9 +462,9 @@ export async function generateInvoicePDF(invoice, {
           .text("TOTAL", pCols[1].x + 2, ty, { width: 80, lineBreak: false });
         doc.fillColor(C.text).font("Helvetica-Bold").fontSize(7.8)
           .text(fmt(totAmt),  pCols[4].x, ty, { width: pCols[4].w - 4, align: "right", lineBreak: false });
-        doc.fillColor(C.green).font("Helvetica-Bold").fontSize(7.8)
+        doc.fillColor(C.credit).font("Helvetica-Bold").fontSize(7.8)
           .text(fmt(totPaid), pCols[5].x, ty, { width: pCols[5].w - 4, align: "right", lineBreak: false });
-        doc.fillColor(totOut > 0 ? C.red : C.green).font("Helvetica-Bold").fontSize(7.8)
+        doc.fillColor(totOut > 0 ? C.debit : C.credit).font("Helvetica-Bold").fontSize(7.8)
           .text(fmt(totOut),  pCols[6].x, ty, { width: pCols[6].w - 4, align: "right", lineBreak: false });
         return yy + H;
       };
@@ -490,10 +513,10 @@ export async function generateInvoicePDF(invoice, {
         doc.fillColor(C.text).font("Helvetica-Bold").fontSize(7.6)
           .text(fmt(p.totalAmount),
             pCols[4].x, midY, { width: pCols[4].w - 4, align: "right", lineBreak: false });
-        doc.fillColor(C.green).font("Helvetica").fontSize(7.6)
+        doc.fillColor(C.credit).font("Helvetica").fontSize(7.6)
           .text(fmt(p.paidAmount),
             pCols[5].x, midY, { width: pCols[5].w - 4, align: "right", lineBreak: false });
-        doc.fillColor(p.outstandingAmount > 0 ? C.red : C.green).font("Helvetica-Bold").fontSize(7.6)
+        doc.fillColor(p.outstandingAmount > 0 ? C.debit : C.credit).font("Helvetica-Bold").fontSize(7.6)
           .text(fmt(p.outstandingAmount),
             pCols[6].x, midY, { width: pCols[6].w - 4, align: "right", lineBreak: false });
 
@@ -516,10 +539,9 @@ export async function generateInvoicePDF(invoice, {
     if (detailed && invoice.lineItems?.length > 0) {
       const dCols = [
         { label: "DATE",        x: M,        w: 60,        align: "left"  },
-        { label: "DESCRIPTION", x: M + 60,   w: 236,       align: "left"  },
-        { label: "QTY",         x: M + 296,  w: 42,        align: "right" },
-        { label: "AMOUNT",      x: M + 338,  w: 72,        align: "right" },
-        { label: "TYPE",        x: M + 410,  w: W - 410,   align: "right" },
+        { label: "DESCRIPTION", x: M + 60,   w: 260,       align: "left"  },
+        { label: "QTY",         x: M + 320,  w: 68,        align: "right" },
+        { label: "AMOUNT",      x: M + 388,  w: W - 388,   align: "right" },
       ];
 
       const drawLedgerSubHeader = (yy) => {
@@ -542,17 +564,18 @@ export async function generateInvoicePDF(invoice, {
       for (let i = 0; i < invoice.lineItems.length; i++) {
         const item = invoice.lineItems[i];
 
-        // Combine description + product name byline (mirrors ledger-ref + ledger-by)
-        let desc = item.description || "--";
-        if (item.productName && !desc.includes(item.productName)) {
-          const suffix = item.variantLabel
-            ? `${item.productName} (${item.variantLabel})`
-            : item.productName;
-          desc += ` — ${suffix}`;
-        }
+        // Main description (.ledger-ref) and product byline (.ledger-by) — two separate lines
+        const mainDesc = item.description || "--";
+        const byline   = item.productName
+          ? (item.variantLabel
+              ? `${item.productName} (${item.variantLabel})`
+              : item.productName)
+          : null;
 
-        const descW = dCols[1].w - 6;
-        const RH    = Math.max(20, measureHeight(doc, desc, descW, "Helvetica", 7.2) + 8);
+        const descW    = dCols[1].w - 6;
+        const mainH    = measureHeight(doc, mainDesc, descW, "Helvetica", 7.2);
+        const bylineH  = byline ? measureHeight(doc, byline, descW, "Helvetica", 6.2) + 2 : 0;
+        const RH       = Math.max(20, mainH + bylineH + 8);
 
         if (y + RH > SAFE_BOTTOM) {
           newPage();
@@ -565,27 +588,25 @@ export async function generateInvoicePDF(invoice, {
         const cy = y + 5;
         doc.fillColor(C.text).font("Helvetica").fontSize(7.2)
           .text(fmtDate(item.date), dCols[0].x + 3, cy,
-            { width: dCols[0].w - 6, lineBreak: false })
-          .text(desc, dCols[1].x + 3, cy, { width: descW });
-
-        doc.fillColor(C.muted).font("Helvetica").fontSize(7.2)
-          .text(item.quantity != null ? String(item.quantity) : "--",
-            dCols[2].x, cy, { width: dCols[2].w - 3, align: "right", lineBreak: false });
+            { width: dCols[0].w - 6, lineBreak: false });
+        doc.fillColor(C.text).font("Helvetica").fontSize(7.2)
+          .text(mainDesc, dCols[1].x + 3, cy, { width: descW, lineBreak: false });
+        if (byline) {
+          doc.fillColor(C.muted).font("Helvetica").fontSize(6.2)
+            .text(byline, dCols[1].x + 3, cy + mainH + 1, { width: descW, lineBreak: false });
+        }
 
         const isCr = item.entryType === "credit";
-        doc.fillColor(isCr ? C.green : C.text).font("Helvetica").fontSize(7.2)
-          .text(fmt(item.amount), dCols[3].x, cy,
-            { width: dCols[3].w - 3, align: "right", lineBreak: false });
+        const qtyStr = item.quantity != null
+          ? `${item.quantity}${item.unit ? " " + item.unit : ""}`
+          : "--";
+        doc.fillColor(C.muted).font("Helvetica").fontSize(7.2)
+          .text(qtyStr, dCols[2].x, cy, { width: dCols[2].w - 3, align: "right", lineBreak: false });
 
-        // CR / DR badge — mirrors .inv-entry-badge .inv-entry-cr/.inv-entry-dr
-        const bW = 22, bH = 12;
-        const bX = dCols[4].x + dCols[4].w - bW - 4;
-        const bY = y + RH / 2 - bH / 2;
-        doc.save().roundedRect(bX, bY, bW, bH, 2)
-          .fill(isCr ? "#d1fae5" : "#fee2e2").restore();
-        doc.fillColor(isCr ? "#065f46" : "#991b1b").font("Helvetica-Bold").fontSize(6.4)
-          .text(isCr ? "CR" : "DR", bX, bY + 2.5,
-            { width: bW, align: "center", lineBreak: false });
+        const amtPrefix = isCr ? "+" : "\u2212";
+        doc.fillColor(isCr ? C.credit : C.debit).font("Helvetica-Bold").fontSize(7.2)
+          .text(`${amtPrefix}${fmt(item.amount)}`, dCols[3].x, cy,
+            { width: dCols[3].w - 3, align: "right", lineBreak: false });
 
         y += RH;
       }
@@ -608,7 +629,7 @@ export async function generateInvoicePDF(invoice, {
       rule(doc, M, y - 1, W, C.border, 0.4);
     }
 
-    // ── S7: Payment Options ──────────────────────────────────────────────────
+    // ── S7: Payment Options / Thank-you ─────────────────────────────────────
     // Two layouts:
     //  A) Has UPI  → 3-column grid: [QR (optional)] [UPI info] [Contact]
     //  B) Phone-only → centred contact card (no UPI columns at all)
@@ -632,6 +653,43 @@ export async function generateInvoicePDF(invoice, {
     const CONT_L   = M + W - CONT_W;               // contact column left edge
 
     // Reserve enough height before page-breaking
+    // When paid: show a thank-you card instead of payment instructions
+    if (invoice.status === "paid") {
+      addPageIfNeeded(80);
+      y = titleBar(doc, M, W, y, "PAYMENT STATUS");
+      y += 10;
+
+      const tyH = 58;
+      doc.save().roundedRect(M, y, W, tyH, 4)
+        .fill(C.surfaceMuted).restore();
+      doc.save().roundedRect(M, y, W, tyH, 4)
+        .strokeColor(C.greenBorder).lineWidth(0.8).stroke().restore();
+
+      doc.fillColor(C.settled).font("Helvetica-Bold").fontSize(18)
+        .text("\u2713", M, y + 10, { width: W, align: "center", lineBreak: false });
+      doc.fillColor(C.greenDark).font("Helvetica-Bold").fontSize(11)
+        .text("Thank You! This invoice has been fully settled.", M, y + 30,
+          { width: W, align: "center", lineBreak: false });
+      if (invoice.paidAt) {
+        doc.fillColor(C.muted).font("Helvetica").fontSize(7.6)
+          .text(`Paid on ${fmtDate(invoice.paidAt)}  \u2014  Farmilky Team`, M, y + 45,
+            { width: W, align: "center", lineBreak: false });
+      }
+      y += tyH + 14;
+
+      // Footer — mirrors .inv-doc-footer
+      const FOOT_H_P = 26;
+      addPageIfNeeded(FOOT_H_P + 8);
+      y += 6;
+      doc.save().rect(0, y, PW, FOOT_H_P).fill(C.greenDark).restore();
+      doc.fillColor(C.greenSubtle).font("Helvetica-Bold").fontSize(7.8)
+        .text("\u2665  Pure Milk, Pure Promise  \u2665", M, y + 8,
+          { width: W, align: "center", lineBreak: false });
+
+      doc.end();
+      return;
+    }
+
     const payBodyH = effectiveUpiId
       ? (qrBuffer ? Math.max(QR_BOX + 28, 115) : 100)
       : 70;  // phone-only card
@@ -786,6 +844,15 @@ export async function generateInvoicePDF(invoice, {
       y += BH + 12;
     }
     // else: no UPI and no phone — skip payment section entirely
+
+    // ── Footer — mirrors .inv-doc-footer ────────────────────────────────────
+    const FOOT_H = 26;
+    addPageIfNeeded(FOOT_H + 8);
+    y += 6;
+    doc.save().rect(0, y, PW, FOOT_H).fill(C.greenDark).restore();
+    doc.fillColor(C.greenSubtle).font("Helvetica-Bold").fontSize(7.8)
+      .text("\u2665  Pure Milk, Pure Promise  \u2665", M, y + 8,
+        { width: W, align: "center", lineBreak: false });
 
     doc.end();
   });
